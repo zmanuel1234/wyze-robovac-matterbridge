@@ -15,3 +15,28 @@
 ### ** Changed **
 
 - Updated Matterbridge dependency requirement in README.
+
+## [1.0.1-secure.1] - 2026-11-01
+
+Unofficial security and reliability patch on top of 1.0.1.
+
+### ** Security **
+
+- Python helpers are started with `execFile` and an argument list instead of a shell command. Vacuum, floor and room names (including ones with spaces or quotes) are passed as-is and can no longer be interpreted as shell syntax.
+- Wyze credentials are passed to the helpers in environment variables, not on the command line, so they no longer show up in `ps`. The helpers remove them from their own environment as soon as they are read.
+- Passwords and API keys are no longer written to the log at any debug level.
+- Password and API key fields are masked in the settings UI.
+
+### ** Changed **
+
+- Login is shared by all helpers (`py_helpers/wyze_auth.py`): access and refresh tokens are cached in a file with owner-only permissions (default `~/.matterbridge/wyze-robovac/tokens.json`), refreshed when Wyze reports them expired, and a full email/password login only happens when no usable token exists. A lock prevents concurrent logins or refreshes.
+- After a failed login the helpers wait 15 minutes (or until the settings change) before trying Wyze again, to avoid locking the account.
+- Replaced the unused `mfaCode` setting with `totpKey`, the authenticator-app setup seed, so accounts with authenticator 2FA can log in unattended. SMS 2FA now fails with a clear message instead of hanging.
+- New settings: `pythonPath` (e.g. a virtual environment's python) and `tokenFile`. `path2py_stubs` now defaults to the helpers bundled with the plugin.
+- Helper scripts time out after 90 seconds instead of hanging indefinitely.
+
+### ** Fixed **
+
+- Startup crash on Matterbridge 3.11: the plugin imported `AreaNamespaceTag`, which current Matterbridge no longer exports.
+- "Docked" messages from the helpers were never recognized (case mismatch), so the Home app state was not corrected after pause/resume/dock on a docked vacuum.
+- Pause, resume and dock helpers crashed instead of reporting "Vacuum not found" when the nickname did not match.

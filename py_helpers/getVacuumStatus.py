@@ -1,42 +1,17 @@
-import os
+# Prints "mode:voltage:is_charging:fault_code" for the vacuum.
 import sys
-import logging
-import wyze_sdk
-from wyze_sdk import Client
-from wyze_sdk.errors import WyzeApiError
+from wyze_auth import run, fail, find_vacuum_mac
 
-if len(sys.argv) != 6 :
-  sys.stdout = sys.stderr
-  print(f"USAGE: {sys.argv[0]} wyze_email wyze_password wyze_key_id wyze_api_key robrobovac_nickname")
-  quit(1)
+if len(sys.argv) != 2:
+    fail(f"USAGE: {sys.argv[0]} robovac_nickname")
 
-device_mac = "Not_Set"
-
-client = Client(email=os.sys.argv[1], password=os.sys.argv[2], key_id=os.sys.argv[3], api_key=os.sys.argv[4])
-roboVacNickname = os.sys.argv[5] 
-
-for device in client.devices_list():
-
-    if device.product.model == "JA_RO2" :
-        if device.nickname == roboVacNickname :
-            device_mac = device.mac
-
-if device_mac == "Not_Set":
-    sys.stdout = sys.stderr
-    print(f"Vacuum not found in list of Wyze devices...")
-    quit(1)
+nickname = sys.argv[1]
 
 
-try:
-  vacuum = client.vacuums.info(device_mac=device_mac)
+def body(client):
+    device_mac = find_vacuum_mac(client, nickname)
+    vacuum = client.vacuums.info(device_mac=device_mac)
+    print(f"{vacuum.mode}:{vacuum.voltage}:{vacuum.is_charging}:{vacuum.fault_code}")
 
-  from wyze_sdk.models.devices import VacuumMode
-  
-  print(f"{vacuum.mode}:{vacuum.voltage}:{vacuum.is_charging}:{vacuum.fault_code}")
 
-  quit(0 )
-
-except WyzeApiError as e:
-    # You will get a WyzeApiError is the request failed
-    sys.stdout = sys.stderr
-    print(f"Got an error: {e}")
+run(body)

@@ -21,14 +21,16 @@
  * limitations under the License.
  */
 
-import { Matterbridge, MatterbridgeEndpoint, MatterbridgeDynamicPlatform, PlatformConfig } from 'matterbridge';
+import { MatterbridgeEndpoint, MatterbridgeDynamicPlatform, PlatformConfig } from 'matterbridge';
 import { RoboticVacuumCleaner } from 'matterbridge/devices';
 // import { isValidBoolean, isValidNumber } from 'matterbridge/utils';
 import { AnsiLogger, debugStringify } from 'matterbridge/logger';
-import { AreaNamespaceTag } from 'matterbridge/matter';
 // import { BooleanState, OnOff, LevelControl, } from 'matterbridge/matter/clusters';
 import { RvcRunMode, PowerSource, ServiceArea, RvcOperationalState, RvcCleanMode } from 'matterbridge/matter/clusters';
-import {exec} from 'child_process';
+import { execFile, ExecFileException } from 'child_process';
+import { homedir } from 'os';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { setTimeout } from 'timers/promises';
 // import { BasicInformationServer, BridgedDeviceBasicInformationServer } from 'matterbridge/matter/behaviors';
 
@@ -72,7 +74,8 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
 
   bridgedDevices = new Map<string, MatterbridgeEndpoint>();
 
-  constructor(matterbridge: Matterbridge, log: AnsiLogger, config: PlatformConfig) {
+  // The type Matterbridge passes in was renamed across 3.x releases; take it from the base class.
+  constructor(matterbridge: ConstructorParameters<typeof MatterbridgeDynamicPlatform>[0], log: AnsiLogger, config: PlatformConfig) {
     super(matterbridge, log, config);
 
     // Verify that Matterbridge is the correct version
@@ -97,6 +100,15 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
     }
     if (config.enableServerRvc === undefined) {
       config.enableServerRvc = true;
+    }
+    // 'mfaCode' was never used; 2FA now works through 'totpKey'.
+    if (config.mfaCode !== undefined) {
+      delete config.mfaCode;
+    }
+    const missing = ['username', 'password', 'key_id', 'api_key'].filter((k) => !String(config[k] ?? '').trim());
+    if (missing.length > 0) {
+      this.log.error(`Missing required setting(s): ${missing.join(', ')}. ` +
+        'A login will fail unless a valid saved token already exists.');
     }
   }
 
@@ -149,7 +161,7 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
         {
           areaId: 1,
           mapId: 1,
-          areaInfo: { locationInfo: { locationName: 'Living', floorNumber: 0, areaType: AreaNamespaceTag.LivingRoom.tag },
+          areaInfo: { locationInfo: { locationName: 'Living', floorNumber: 0, areaType: null },
             landmarkInfo: null },
         },
       ], // supportedAreas
@@ -319,9 +331,7 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
 
   async setCurrentFloor( floorName : string ) {
     const floor = floorName;
-    const tmpstr1 = `${this.config.username} ${this.config.password}`;
-    const tmpstr2 = `${this.config.key_id} ${this.config.api_key} '${this.nickname}' '${floor}'`;
-    await exec(`python3 ${this.config.path2py_stubs}/setVacuumFloor.py ${tmpstr1} ${tmpstr2}`,
+    this.runPy('setVacuumFloor.py', [this.nickname, floor],
       (error, stdout, stderr) => {
         if (error) {
           this.log.info(`error: ${error.message}`);
@@ -359,10 +369,7 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
   }
 
   async vacuumStartClean(nickname : string) {
-    this.myLogger(`vacuumStartClean(): username = '${this.config.username}', password = '${this.config.password}'`);
-    this.myLogger(`vacuumStartClean(): key_id = '${this.config.key_id}', api_key = '${this.config.api_key}', nickname = '${nickname}'`);
-    const tmpstr = `${this.config.key_id} ${this.config.api_key} '${nickname}'`;
-    await exec(`python3 ${this.config.path2py_stubs}/vacuumStartClean.py ${this.config.username} ${this.config.password} ${tmpstr}`,
+    this.runPy('vacuumStartClean.py', [nickname],
       (error, stdout, stderr) => {
         if (error) {
           this.log.info(`error: ${error.message}`);
@@ -371,7 +378,7 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
         }
         if (stderr) {
           this.myLogger(`stderr: ${stderr}`);
-          if( stderr.includes('Robovac is docked') ) {
+          if( stderr.toLowerCase().includes('robovac is docked') ) {
             if( this.roboticVacuum ) {
               this.log.info('Wanted to Resume cleaning but device is currently docked. Update the UI');
               this.roboticVacuum.setAttribute('RvcRunMode', 'currentMode', 1, this.log); // Idle
@@ -408,10 +415,7 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
   }
 
   async vacuumPauseSweeping(nickname : string) {
-    this.myLogger(`vacuumPauseSweep(): username = '${this.config.username}', password = '${this.config.password}'`);
-    this.myLogger(`vacuumPauseSweep(): key_id = '${this.config.key_id}', api_key = '${this.config.api_key}', nickname = '${nickname}'`);
-    const tmpstr = `${this.config.key_id} ${this.config.api_key} '${nickname}'`;
-    await exec(`python3 ${this.config.path2py_stubs}/vacuumPauseSweep.py ${this.config.username} ${this.config.password} ${tmpstr}`,
+    this.runPy('vacuumPauseSweep.py', [nickname],
       (error, stdout, stderr) => {
         if (error) {
           this.log.info(`error: ${error.message}`);
@@ -420,7 +424,7 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
         }
         if (stderr) {
           this.myLogger(`stderr: ${stderr}`);
-          if( stderr.includes('Robovac is docked') ) {
+          if( stderr.toLowerCase().includes('robovac is docked') ) {
             if( this.roboticVacuum ) {
               this.log.info('Wanted to Pause but device is currently docked. Update the UI');
               this.roboticVacuum.setAttribute('RvcRunMode', 'currentMode', 1, this.log); // Idle
@@ -457,10 +461,7 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
   }
 
   async vacuumStopSweeping(nickname : string) {
-    this.myLogger(`vacuumStopSweep(): username = '${this.config.username}', password = '${this.config.password}'`);
-    this.myLogger(`vacuumStopSweep(): key_id = '${this.config.key_id}', api_key = '${this.config.api_key}', nickname = '${nickname}'`);
-    const tmpstr = `${this.config.key_id} ${this.config.api_key} '${nickname}'`;
-    await exec(`python3 ${this.config.path2py_stubs}/vacuumStopSweep.py ${this.config.username} ${this.config.password} ${tmpstr}`,
+    this.runPy('vacuumStopSweep.py', [nickname],
       (error, stdout, stderr) => {
         if (error) {
           this.log.info(`error: ${error.message}`);
@@ -469,7 +470,7 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
         }
         if (stderr) {
           this.myLogger(`stderr: ${stderr}`);
-          if( stderr.includes('Robovac is already docked') ) {
+          if( stderr.toLowerCase().includes('robovac is already docked') ) {
             if( this.roboticVacuum ) {
               this.log.info('Wanted to Stop sweeping but device is already docked. Update the UI');
               this.roboticVacuum.setAttribute('RvcRunMode', 'currentMode', 1, this.log); // Idle
@@ -507,7 +508,7 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
   }
 
   async vacuumStartSweeping(nickname : string, rooms2sweep : number[]) {
-    let roomNames = '';
+    const roomNames : string[] = [];
     if( rooms2sweep.length > 0 ) {
       for (let i = 0; i < rooms2sweep.length; i++) {
         const areaId = rooms2sweep[i];
@@ -516,17 +517,14 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
           const area = this.supportedAreas[j];
           if( area.areaId === areaId ) {
             const name : string = area.areaInfo.locationInfo.locationName;
-            roomNames += '\'' + name + '\'' + ' ';
-            this.myLogger(`roomNames = '${roomNames}'`);
+            roomNames.push( name );
+            this.myLogger(`roomNames = '${roomNames.join(', ')}'`);
           }
         }
       }
-      this.log.info(`Rooms to be swept = '${roomNames}'`);
+      this.log.info(`Rooms to be swept = '${roomNames.join(', ')}'`);
     }
-    this.myLogger(`vacuunStartSweeping(): username = '${this.config.username}', password = '${this.config.password}'`);
-    this.myLogger(`vacuunStartSweeping(): key_id = '${this.config.key_id}', api_key = '${this.config.api_key}', nickname = '${nickname}'`);
-    const tmpstr = `${this.config.key_id} ${this.config.api_key} '${nickname}' ${roomNames}`;
-    await exec(`python3 ${this.config.path2py_stubs}/vacuumStartSweep.py ${this.config.username} ${this.config.password} ${tmpstr}`,
+    this.runPy('vacuumStartSweep.py', [nickname, ...roomNames],
       (error, stdout, stderr) => {
         if (error) {
           this.log.info(`error: ${error.message}`);
@@ -565,10 +563,7 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
 
   async getCurrentStatus(nickname : string) {
     this.currentStatus = '';
-    this.myLogger(`getCurrentStatus(): username = '${this.config.username}', password = '${this.config.password}'`);
-    this.myLogger(`getCurrentStatus(): key_id = '${this.config.key_id}', api_key = '${this.config.api_key}', nickname = '${nickname}'`);
-    const tmpstr = `${this.config.key_id} ${this.config.api_key} '${nickname}'`;
-    await exec(`python3 ${this.config.path2py_stubs}/getVacuumStatus.py ${this.config.username} ${this.config.password} ${tmpstr}`,
+    this.runPy('getVacuumStatus.py', [nickname],
       async (error, stdout, stderr) => {
         if (error) {
           this.log.info(`error: ${error.message}`);
@@ -704,11 +699,8 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
     //
     // Make list of nicknames for each vacuum.
     //
-    this.myLogger(`discoverDevices(): username = '${this.config.username}', password = '${this.config.password}'`);
-    this.myLogger(`discoverDevices(): key_id = '${this.config.key_id}', api_key = '${this.config.api_key}'`);
-    const tmpstr = `${this.config.username} ${this.config.password} ${this.config.key_id}  ${this.config.api_key}`;
     this.myLogger('Before exec getVacuumDeviceList.py');
-    await exec(`python3 ${this.config.path2py_stubs}/getVacuumDeviceList.py ${tmpstr}`,
+    this.runPy('getVacuumDeviceList.py', [],
       (error, stdout, stderr) => {
         if (error) {
           this.log.info(`error: ${error.message}`);
@@ -769,10 +761,7 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
     //
     // Get list of rooms from Wyze from the current map for this device
     //
-    this.myLogger(`getRooms(): username = '${this.config.username}', password = '${this.config.password}'`);
-    this.myLogger(`getRooms(): key_id = '${this.config.key_id}', api_key = '${this.config.api_key}', nickname = '${nickname}'`);
-    const tmpstr = `${this.config.password} ${this.config.key_id} ${this.config.api_key} '${nickname}'`;
-    await exec(`python3 ${this.config.path2py_stubs}/getVacuumFloors.py ${this.config.username} ${tmpstr}`,
+    this.runPy('getVacuumFloors.py', [nickname],
       (error, stdout, stderr) => {
         if (error) {
           this.log.info(`error: ${error.message}`);
@@ -803,6 +792,51 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
   }
 
   // =========================== Utilities ===================================
+
+  /*
+   * Run one of the Python helper scripts.
+   *
+   * The interpreter is started directly with an argument list (no shell), so
+   * vacuum, floor and room names are passed as-is and cannot be misread as
+   * shell syntax. Wyze credentials go only into the child's environment,
+   * which, unlike the command line, other users on the machine cannot read.
+   * Neither the arguments nor the environment are ever logged.
+   */
+  runPy(script : string, args : string[],
+    callback : (error : ExecFileException | null, stdout : string, stderr : string) => void) {
+    const env : NodeJS.ProcessEnv = {
+      ...process.env,
+      WYZE_EMAIL: String(this.config.username ?? ''),
+      WYZE_PASSWORD: String(this.config.password ?? ''),
+      WYZE_KEY_ID: String(this.config.key_id ?? ''),
+      WYZE_API_KEY: String(this.config.api_key ?? ''),
+      WYZE_TOTP_KEY: String(this.config.totpKey ?? ''),
+      WYZE_TOKEN_FILE: this.tokenFile(),
+      PYTHONWARNINGS: 'ignore',   // a library warning on stderr would otherwise be treated as a failure
+      PYTHONDONTWRITEBYTECODE: '1',
+    };
+    const python = String(this.config.pythonPath || 'python3');
+    const scriptPath = path.join(this.helperDir(), script);
+    execFile(python, [scriptPath, ...args], { env, timeout: 90_000, maxBuffer: 1024 * 1024 },
+      (error, stdout, stderr) => callback(error, String(stdout), String(stderr)));
+  }
+
+  helperDir() : string {
+    const configured = String(this.config.path2py_stubs ?? '').trim();
+    if (configured) {
+      return configured;
+    }
+    // Default: the py_helpers folder shipped with this plugin (dist/../py_helpers)
+    return path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'py_helpers');
+  }
+
+  tokenFile() : string {
+    const configured = String(this.config.tokenFile ?? '').trim();
+    if (configured) {
+      return configured.startsWith('~/') ? path.join(homedir(), configured.slice(2)) : configured;
+    }
+    return path.join(homedir(), '.matterbridge', 'wyze-robovac', 'tokens.json');
+  }
 
   myLogger( line : string ) {
     switch( this.config.debugLevel ) {

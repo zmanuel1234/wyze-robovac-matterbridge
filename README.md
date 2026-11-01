@@ -9,6 +9,8 @@
 
 Matterbridge plugin to control and report status of the Wyze S200 Robot Vacuum
 
+> **1.0.1-secure.1** is an unofficial patch of 1.0.1 that changes how Wyze credentials are handled and adds token caching and authenticator-app 2FA support. See `CHANGELOG.md`.
+
 A Robot Vacuum Cleaner device (supported by SmartThings, Alexa, Home Assistant and partially by Apple Home). Read also https://github.com/Luligu/matterbridge/discussions/264. 
 
 If you like this project and find it useful, please consider giving it a star on GitHub at https://github.com/rmcob/matterbridge-wyze-robovac and sponsoring it.
@@ -43,7 +45,7 @@ This info is used in the Matterbridge Config settings for this plugin. See the *
 
 Use the settings UI in Matterbridge browser interface to configure your Wyze account information, or manually add the following to the platforms section of your config file. See the **`Requirements`** section above for instructions on how to get your API_KEY and KEY_ID:
 
-```js
+```
 {
   "platforms": [
     {
@@ -51,14 +53,16 @@ Use the settings UI in Matterbridge browser interface to configure your Wyze acc
       "name": "WyzeRoboVac",
       "username": "YOUR_EMAIL",
       "password": "YOUR_PASSWORD",
-      "mfaCode": "YOUR_2FA_AUTHENTICATION_PIN",
       "key_id": "YOUR WYZE ACCOUNT KEY_ID",
       "api_key": "YOUR WYZE ACCOUNT API_KEY",
-      "statusCheckRefreshInterval": "Refresh Interval for status checks after sweeping starts. Default 45 sec",
-      "idleStatusCheck1RefreshInterval": "Refresh Interval for battery checks when idle. Default 1800 seconds (30 min)",
-      "idleStatusCheck2RefreshInterval": "Refresh Interval for battery checks when busy or charge level < 100. Default 120 seconds (2 min)",
-      "path2py_stubs": "Path to Python helper scripts. Default '/usr/lib/node_modules/matterbridge-wyze-robovac/py_helpers'",
-      "debugLevel": "Can be 0 (no logging), 1 (log.info), or 2 (log.debug)"
+      "totpKey": "AUTHENTICATOR SETUP SEED (only if 2FA uses an authenticator app)",
+      "busyStatusCheckRefreshInterval": 45,
+      "idleStatusCheck1RefreshInterval": 1800,
+      "idleStatusCheck2RefreshInterval": 120,
+      "path2py_stubs": "",
+      "pythonPath": "/opt/wyze-venv/bin/python",
+      "tokenFile": "",
+      "debugLevel": 0
     }
   ]
 }
@@ -66,10 +70,17 @@ Use the settings UI in Matterbridge browser interface to configure your Wyze acc
 
 ### Optional fields
 
-* **`mfaCode`** &ndash; Only required for the initial login if you have two-factor authentication enabled for your account. This is typically a 6-digit code provided by your authenticator app.
-* **`statusCheckRefreshInterval`** &ndash; Defines how often the status of the vacuum will be polled in seconds after sweeping has started (e.g., `"statusCheckRefreshInterval": 60` will check your devices' status every 60 seconds). Defaults to 30 seconds.
-* **`idleStatusCheck1RefreshInterval`** &ndash; Defines how often to check the battery level of the vacuum when it is idle and the battery level = 100. (e.g., `"idleBatteryCheckRefreshInterval": 2700` will check the battery level every 45 minutes. Defaults to 1800 seconds (30 minutes).
-* **`idleStatusCheck2RefreshInterval`** &ndash; Defines how often to check the battery level of the vacuum when it is busy or the battery level < 100. (e.g., `"busyBatteryCheckRefreshInterval": 60` will check the battery level every minute. Defaults to 120 seconds (2 minutes).
+- **`totpKey`** – Only if your Wyze account uses an authenticator app for two-factor authentication. This is the secret key shown when you set up the app (the text behind the QR code), not a 6-digit code. It is used only when the plugin has to log in from scratch. SMS two-factor authentication cannot be used unattended.
+- **`pythonPath`** – The Python interpreter that has `wyze-sdk` installed, e.g. the `python` inside a virtual environment. Defaults to `python3`.
+- **`tokenFile`** – Where Wyze access/refresh tokens are cached (owner-only permissions). Defaults to `~/.matterbridge/wyze-robovac/tokens.json`.
+- **`path2py_stubs`** – Folder with the Python helper scripts. Leave empty to use the ones bundled with the plugin.
+- **`busyStatusCheckRefreshInterval`** – Seconds between status checks while the vacuum is sweeping. Defaults to 45.
+- **`idleStatusCheck1RefreshInterval`** – Seconds between status checks when docked with a full battery. Defaults to 1800 (30 min).
+- **`idleStatusCheck2RefreshInterval`** – Seconds between status checks when docked and charging. Defaults to 120 (2 min).
+
+### How credentials are handled (1.0.1-secure.1)
+
+The plugin never passes credentials on a command line and never logs them. Each helper receives them in its environment, logs in at most once, and then reuses a cached access token, refreshing it when it expires. If a login fails, it waits 15 minutes (or until the settings change) before trying again. See `CHANGELOG.md` for details.
 
 ## To Do
 
