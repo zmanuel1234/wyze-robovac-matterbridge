@@ -52,6 +52,8 @@ _token_file = os.path.expanduser(
     os.environ.get("WYZE_TOKEN_FILE", "~/.matterbridge/wyze-robovac/tokens.json")
 )
 _fail_file = _token_file + ".loginfail"
+_devices_file = _token_file + ".devices.json"   # nickname -> MAC, saves a device-list request per call
+_used_cached_mac = False
 
 
 def fail(message, code=1):
@@ -80,6 +82,16 @@ def _load_tokens():
     except (OSError, ValueError):
         pass
     return None
+
+
+def _write_private_json(path, data):
+    _ensure_dir()
+    tmp = path + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
 
 
 def _save_tokens(client):
@@ -223,23 +235,54 @@ def run(body):
     and call body again. Expiry surfaces on the first API call, before any
     command has been sent, so re-running the body is safe.
     """
+    global _used_cached_mac
     try:
         client = get_client()
         try:
             return body(client)
         except WyzeApiError as e:
-            if not _is_token_error(e):
-                raise
-            client = _reauth(stale_token=client._token)
-            return body(client)
+            if _is_token_error(e):
+                client = _reauth(stale_token=client._token)
+                return body(client)
+            if _used_cached_mac:
+                # The remembered vacuum ID may be stale (vacuum replaced or re-added):
+                # forget it and look the vacuum up again, once.
+                _forget_macs()
+                _used_cached_mac = False
+                return body(client)
+            raise
     except AuthError as e:
         fail(str(e))
     except WyzeApiError as e:
         fail("Got an error: " + str(e).split("\n")[0])
 
 
+def _forget_macs():
+    try:
+        os.remove(_devices_file)
+    except OSError:
+        pass
+
+
 def find_vacuum_mac(client, nickname):
+    """
+    The vacuum's ID (MAC) for its nickname. Remembered after the first lookup, so
+    regular status checks don't fetch the whole Wyze device list every time.
+    """
+    global _used_cached_mac
+    try:
+        with open(_devices_file, "r", encoding="utf-8") as f:
+            mac = json.load(f).get(nickname)
+        if mac:
+            _used_cached_mac = True
+            return mac
+    except (OSError, ValueError):
+        pass
     for device in client.devices_list():
         if device.product.model == VACUUM_MODEL and device.nickname == nickname:
+            try:
+                _write_private_json(_devices_file, {nickname: device.mac})
+            except OSError:
+                pass
             return device.mac
     fail("Vacuum not found in list of Wyze devices...")

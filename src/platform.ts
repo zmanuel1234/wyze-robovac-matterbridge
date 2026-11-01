@@ -38,6 +38,10 @@ import { setTimeout } from 'timers/promises';
 export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatform {
 
   // Matter clean-mode number -> Wyze suction level understood by vacuumSetSuction.py
+  // How long after a Home command the vacuum gets to react (Wyze takes 10-15 s)
+  // before a poll that still shows the old state may overwrite what Home displays.
+  static readonly COMMAND_GRACE_MS = 40_000;
+
   static readonly SUCTION_BY_MODE : Record<number, string> = { 1: 'standard', 3: 'quiet', 4: 'strong' };
 
   private discoverDevicesFinished = false;
@@ -54,6 +58,8 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
   private macAddr : string = '';
   private currentStatus : string = '';
   private oldStatus : string = '';
+  private lastAppliedState : string = '';   // run mode + operational state last shown in the Home app
+  private commandGraceUntil : number = 0;   // until then, polls don't overwrite a state set by a Home command
   private currentFloorName : string = '';
   private batteryLevel : number = 0;
   private batteryWasCharging : boolean = false;
@@ -192,6 +198,9 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
     this.roboticVacuum.addCommandHandler('pause', async () => {
       this.log.info('\'pause\' handler called - RoboVac');
       await this.pauseSweeping();
+      this.lastAppliedState = this.stateKey(2, RvcOperationalState.OperationalState.Paused);
+      this.commandGraceUntil = Date.now() + RoboVacMatterbridgeDynamicPlatform.COMMAND_GRACE_MS;
+      this.pokeStatusLoop = true;
     });
 
     this.roboticVacuum.addCommandHandler('resume', async () => {
@@ -199,27 +208,17 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
       this.doSweeping();
     });
 
+    // Returns as soon as the dock command is sent: Matterbridge shows "returning to dock"
+    // in the Home app once this handler returns, and the status loop tracks the rest.
+    // (The original version waited here until the vacuum had docked, which held the
+    // Home app's command, and the tile, for minutes.)
     this.roboticVacuum.addCommandHandler('goHome', async () => {
       this.log.info('\'goHome\' handler called - RoboVac');
       await this.stopSweeping();
-
-      let doLoop : boolean = true;
-      while( doLoop ) {  // Waiting for vacuum to reach the dock or pause
-        for( let i = 0; i < this.statusRefreshInterval; i++ ) {
-          if( this.currentStatus === 'VacuumMode.IDLE' || this.currentStatus === 'VacuumMode.PAUSED'
-                                                      || this.currentStatus === 'VacuumMode.DOCKED_NOT_COMPLETE' ) {
-            doLoop = false;
-            break;
-          }
-          if( this.pokeStatusLoop ) {
-            break;   // Something external poked here. Re-evaluate for statusRefreshInterval
-          }
-          await setTimeout(1000);
-        }
-        if( doLoop === false ) {
-          break;
-        }
-      }
+      // Matterbridge sets "returning to dock" itself but leaves the run mode alone, so
+      // forget what was shown: the first check after the grace period writes both.
+      this.lastAppliedState = '';
+      this.commandGraceUntil = Date.now() + RoboVacMatterbridgeDynamicPlatform.COMMAND_GRACE_MS;
       this.pokeStatusLoop = true;
     });
 
@@ -633,58 +632,34 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
           }
         }
         /*
-         * Update UI with current status
+         * Show the vacuum's state in the Home app. Every Wyze mode is mapped (see
+         * matterStateFor), including runs started outside Home, and Charging vs Docked.
+         * The state is only written when it changes from what was last shown, so a
+         * command just sent from Home isn't undone by a poll that ran before the
+         * vacuum reacted.
          */
-        if( this.currentStatus !== this.oldStatus ) {
-          this.oldStatus = this.currentStatus;
-          if( this.currentStatus === 'VacuumMode.IDLE' ) {
-            if( this.roboticVacuum ) {
-              await this.roboticVacuum.setAttribute('RvcRunMode', 'currentMode', 1, this.log); // Idle
-              await this.roboticVacuum.setAttribute('RvcOperationalState', 'operationalState',
-                RvcOperationalState.OperationalState.Docked, this.log);
-              await this.roboticVacuum.setAttribute('RvcOperationalState', 'operationalError',
-                { errorStateId: RvcOperationalState.ErrorState.NoError }, this.log);
-            }
-            this.log.info( 'Sweeping completed.');
-
-          } else if( this.currentStatus === 'VacuumMode.PAUSED' ) {
-            if( this.roboticVacuum ) {
-              await this.roboticVacuum.setAttribute('RvcRunMode', 'currentMode', 2, this.log); // Cleaning
-              await this.roboticVacuum.setAttribute('RvcOperationalState', 'operationalState',
-                RvcOperationalState.OperationalState.Paused, this.log);
-              await this.roboticVacuum.setAttribute('RvcOperationalState', 'operationalError',
-                { errorStateId: RvcOperationalState.ErrorState.NoError }, this.log);
-            }
-            this.log.info( 'Sweeping paused.');
-
-          } else if( this.currentStatus === 'VacuumMode.DOCKED_NOT_COMPLETE' ) {
-            if( this.roboticVacuum ) {
-              this.log.info( 'Vacuum docked. Will resume after recharge to 60%' );
-              await this.roboticVacuum.setAttribute('RvcRunMode', 'currentMode', 2, this.log); // Cleaning
-              await this.roboticVacuum.setAttribute('RvcOperationalState', 'operationalState',
-                RvcOperationalState.OperationalState.Docked, this.log);
-              await this.roboticVacuum.setAttribute('RvcOperationalState', 'operationalError',
-                { errorStateId: RvcOperationalState.ErrorState.NoError }, this.log);
-            }
-            this.log.info( 'Vacuum is docked. Will resume sweeping after recharge to 60%' );
-
-          } else if( this.currentStatus === 'VacuumMode.FINISHED_RETURNING_TO_CHARGE' ||
-                     this.currentStatus === 'VacuumMode.RETURNING_TO_CHARGE' ) {
-            if( this.roboticVacuum ) {
-              await this.roboticVacuum.setAttribute('RvcRunMode', 'currentMode', 1, this.log); // Idle
-              await this.roboticVacuum.setAttribute('RvcOperationalState', 'operationalState',
-                RvcOperationalState.OperationalState.SeekingCharger, this.log);
-              await this.roboticVacuum.setAttribute('RvcOperationalState', 'operationalError',
-                { errorStateId: RvcOperationalState.ErrorState.NoError }, this.log);
-            }
-            this.log.info( 'Vacuum is returning to dock.');
+        const target = this.matterStateFor(this.currentStatus, this.batteryLevel, this.isDocked);
+        if( target && this.roboticVacuum ) {
+          const key = this.stateKey(target.runMode, target.opState);
+          const inGrace = Date.now() < this.commandGraceUntil;
+          if( key !== this.lastAppliedState && !inGrace ) {
+            this.lastAppliedState = key;
+            await this.roboticVacuum.setAttribute('RvcRunMode', 'currentMode', target.runMode, this.log);
+            await this.roboticVacuum.setAttribute('RvcOperationalState', 'operationalState', target.opState, this.log);
+            await this.roboticVacuum.setAttribute('RvcOperationalState', 'operationalError',
+              { errorStateId: RvcOperationalState.ErrorState.NoError }, this.log);
+            this.log.info(`Vacuum is ${target.label} (${this.currentStatus}, battery ${this.batteryLevel}%)`);
           }
+        } else if( this.currentStatus !== this.oldStatus ) {
+          this.log.info(`Unrecognised vacuum status '${this.currentStatus}'; Home app state left unchanged`);
         }
+        this.oldStatus = this.currentStatus;
         /*
-         * Determine statusRefreshInterval
+         * Determine statusRefreshInterval: fast while cleaning, pausing or returning
+         * (or when the state is unknown), slower while docked.
          */
-        if( this.currentStatus !== 'VacuumMode.IDLE' ) {
-          this.statusRefreshInterval = Number( this.config.busyStatusCheckRefreshInterval );  // Sweeping
+        if( !target || target.busy || Date.now() < this.commandGraceUntil ) {
+          this.statusRefreshInterval = Number( this.config.busyStatusCheckRefreshInterval );  // Active
         } else if( this.batteryLevel < 100 ) {
           this.statusRefreshInterval = Number( this.config.idleStatusCheck2RefreshInterval );  // Docked battery < 100% charge
         } else {
@@ -708,7 +683,7 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
     await this.discoverDevices();
     this.myLogger('waiting for discoverDevices() to finish');
     while( ! this.discoverDevicesFinished ) {
-      if( cntr++ > 10 ) {  // Wait up to 10 seconds for discoverDevices() to finish
+      if( cntr++ > 45 ) {  // Wait up to 45 seconds (a first login with 2FA can take a while)
         break;
       }
       await setTimeout(1000);  // Delay 1 second
@@ -772,7 +747,7 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
     await this.getRooms(this.nickname);
     this.myLogger('waiting for getRooms() to finish');
     while( ! this.getRoomsFinished ) {
-      if( cntr++ > 10 ) {  // Wait up to 10 seconds for getRooms() to finish
+      if( cntr++ > 45 ) {  // Wait up to 45 seconds (a first login with 2FA can take a while)
         break;
       }
       await setTimeout(1000);  // Delay 1 second
@@ -860,6 +835,53 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
       return configured.startsWith('~/') ? path.join(homedir(), configured.slice(2)) : configured;
     }
     return path.join(homedir(), '.matterbridge', 'wyze-robovac', 'tokens.json');
+  }
+
+  /*
+   * Wyze vacuum mode (as printed by getVacuumStatus.py, e.g. 'VacuumMode.SWEEPING')
+   * -> Matter run mode (1 Idle, 2 Cleaning) and RVC operational state.
+   * Mode names come from wyze_sdk.models.devices.vacuums.VacuumMode.
+   */
+  matterStateFor(status : string, battery : number, onDock : boolean)
+    : { runMode : number, opState : number, busy : boolean, label : string } | undefined {
+    const S = RvcOperationalState.OperationalState;
+    switch( status.replace(/^VacuumMode\./, '') ) {
+      case 'CLEANING':
+      case 'SWEEPING':
+      case 'QUICK_MAPPING_MAPPING':
+        return { runMode: 2, opState: S.Running, busy: true, label: 'cleaning' };
+      case 'PAUSED':
+      case 'PAUSE':
+      case 'QUICK_MAPPING_PAUSED':
+      case 'BREAK_POINT':
+        return { runMode: 2, opState: S.Paused, busy: true, label: 'paused' };
+      case 'RETURNING_TO_CHARGE':
+      case 'FINISHED_RETURNING_TO_CHARGE':
+      case 'FULL_FINISH_SWEEPING_ON_WAY_CHARGE':
+      case 'QUICK_MAPPING_COMPLETED_RETURNING_TO_CHARGE':
+        return { runMode: 1, opState: S.SeekingCharger, busy: true, label: 'returning to the dock' };
+      case 'DOCKED_NOT_COMPLETE':
+      case 'QUICK_MAPPING_DOCKED_NOT_COMPLETE':
+        return { runMode: 2, opState: S.Charging, busy: false, label: 'charging, and will resume cleaning' };
+      case 'IDLE':
+        return onDock && battery < 100
+          ? { runMode: 1, opState: S.Charging, busy: false, label: 'docked and charging' }
+          : { runMode: 1, opState: S.Docked, busy: false, label: 'docked' };
+      default:
+        return undefined;
+    }
+  }
+
+  stateKey(runMode : number, opState : number) : string {
+    return `${runMode}:${opState}`;
+  }
+
+  // Statuses at which a run started from Home counts as over (cleaning finished,
+  // paused, or docked to recharge mid-run).
+  isSettled() : boolean {
+    const mode = this.currentStatus.replace(/^VacuumMode\./, '');
+    return ['IDLE', 'PAUSED', 'PAUSE', 'BREAK_POINT', 'QUICK_MAPPING_PAUSED',
+      'DOCKED_NOT_COMPLETE', 'QUICK_MAPPING_DOCKED_NOT_COMPLETE'].includes(mode);
   }
 
   myLogger( line : string ) {
@@ -963,25 +985,12 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
       await this.roboticVacuum.setAttribute('RvcOperationalState', 'operationalError',
         { errorStateId: RvcOperationalState.ErrorState.NoError }, this.log);
       await this.roboticVacuum.updateAttribute(ServiceArea.Cluster.id, 'currentArea', this.selectedAreas[0], this.log);
+      this.lastAppliedState = this.stateKey(2, RvcOperationalState.OperationalState.Running);
     }
-    let doLoop : boolean = true;
-    while( doLoop ) {  // Wait for sweeping to finish (status = VacuumMode.IDLE)
-      for( let i = 0; i < this.statusRefreshInterval; i++ ) {
-        if( this.currentStatus === 'VacuumMode.IDLE' || this.currentStatus === 'VacuumMode.PAUSED'
-                                                    || this.currentStatus === 'VacuumMode.DOCKED_NOT_COMPLETE' ) {
-          doLoop = false;
-          break;
-        }
-        if( this.pokeStatusLoop ) {
-          break;   // Something external poked here. Re-evaluate for statusRefreshInterval
-        }
-        await setTimeout(1000);
-      }
-      if( doLoop === false ) {
-        break;
-      }
-      this.myLogger(`waiting for sweeping to finish: Status = '${this.currentStatus}'`);
-    }
+    // Check the vacuum's status now and then on the fast interval. (The original
+    // version waited here in a loop that could spin without pausing, freezing the
+    // plugin, whenever another handler asked for an early status check.)
+    this.commandGraceUntil = Date.now() + RoboVacMatterbridgeDynamicPlatform.COMMAND_GRACE_MS;
     this.pokeStatusLoop = true;
   }
 

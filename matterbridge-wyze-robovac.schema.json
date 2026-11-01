@@ -79,24 +79,24 @@
     },
     "busyStatusCheckRefreshInterval": {
       "title": "Busy status Check Refresh Interval",
-      "description": "Specify the number of seconds to wait between status checks when the vacuum is sweeping. Default is 45 seconds. Minimum is 25 seconds, Values less than 30 seconds are discouraged. The wyze server gets unhappy when you poll it too much.",
+      "description": "Seconds between status checks while the vacuum is cleaning, paused or returning to the dock. Default 45, minimum 25. Wyze may ignore requests if they come too often.",
       "type": "number",
       "default": 45,
       "minimum": 25
     },
     "idleStatusCheck1RefreshInterval": {
       "title": "Idle status Check Refresh Interval with full charge",
-      "description": "Specify the number of seconds to wait between status checks when the vacuum is is docked and at 100% charge. Default is 1800 seconds (30 min). Minimum is 300 seconds (5 min). Maxumum is 3600 (1 hr).",
+      "description": "Seconds between status checks while the vacuum is docked with a full battery. Default 300 (5 min), minimum 300, maximum 3600. This is how quickly a run started outside the Home app (Wyze app, button, schedule) shows up.",
       "type": "number",
-      "default": 1800,
+      "default": 300,
       "minimum": 300,
       "maximum": 3600
     },
     "idleStatusCheck2RefreshInterval": {
       "title": "Idle status Check Refresh Interval with less than full charge",
-      "description": "Specify the number of seconds to wait between status checks when the vacuum is docked at less than 100% charge. Default is 120 seconds (2 min). Minimum is 60 seconds (1 min)",
+      "description": "Seconds between status checks while the vacuum is docked and charging. Default 60 (1 min), minimum 60.",
       "type": "number",
-      "default": 120,
+      "default": 60,
       "minimum": 60
     },
     "path2py_stubs": {

@@ -51,3 +51,19 @@ Unofficial security and reliability patch on top of 1.0.1.
 
 - Moved `jest`, `rimraf` and the other build/test-only packages from runtime `dependencies` to `devDependencies`; the plugin has no runtime npm dependencies, so installs are much smaller.
 - Three clean modes mapped to the S200's suction levels: Standard, Quiet and Strong. Choosing one in the Home app while the vacuum is idle sets the suction level through the new `py_helpers/vacuumSetSuction.py`. Mode number 2 is deliberately unused so older Matterbridge versions, which route clean-mode changes to the run-mode handler, can't mistake it for "start cleaning".
+
+## [1.0.1-secure.3] - 2026-11-01
+
+### ** Fixed **
+
+- Every Wyze vacuum mode is now shown in the Home app: runs started outside Home (Wyze app, button, schedule) show as cleaning; all pause, return-to-dock, mapping and "resume after charging" variants are mapped; docked is shown as Charging until the battery is full.
+- "Return to dock" from the Home app no longer holds the command until the vacuum has docked; the Home app shows it returning straight away.
+- Pause and dock from the Home app are no longer rejected when the run was started outside Home (the plugin now knows the vacuum is cleaning).
+- A poll made just after a Home command can no longer flip the tile back before the vacuum has reacted (40-second grace period).
+- Removed a wait loop that could spin without pausing and freeze the plugin when an early status check was requested during a run.
+- Startup waits up to 45 s (was 10 s) for the vacuum and room lookups, so a slow first login no longer leaves the vacuum missing.
+
+### ** Changed **
+
+- Default check intervals while docked: 60 s while charging (was 120 s) and 300 s when full (was 1800 s). Existing installs keep their saved values; change them in the plugin settings.
+- The vacuum's ID is remembered between checks, saving one Wyze request per check; it is looked up again automatically if it stops working.
