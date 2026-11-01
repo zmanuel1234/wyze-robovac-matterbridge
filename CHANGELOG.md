@@ -40,3 +40,13 @@ Unofficial security and reliability patch on top of 1.0.1.
 - Startup crash on Matterbridge 3.11: the plugin imported `AreaNamespaceTag`, which current Matterbridge no longer exports.
 - "Docked" messages from the helpers were never recognized (case mismatch), so the Home app state was not corrected after pause/resume/dock on a docked vacuum.
 - Pause, resume and dock helpers crashed instead of reporting "Vacuum not found" when the nickname did not match.
+
+## [1.0.1-secure.2] - 2026-11-01
+
+### ** Fixed **
+
+- The vacuum was rejected on Matterbridge 3.11 ("Behaviors have errors", rvcCleanMode.supportedModes "2 to 255"), so it never appeared under Devices and could not be paired. Matter requires at least two clean modes; the plugin declared one.
+
+### ** Added **
+
+- Three clean modes mapped to the S200's suction levels: Standard, Quiet and Strong. Choosing one in the Home app while the vacuum is idle sets the suction level through the new `py_helpers/vacuumSetSuction.py`. Mode number 2 is deliberately unused so older Matterbridge versions, which route clean-mode changes to the run-mode handler, can't mistake it for "start cleaning".

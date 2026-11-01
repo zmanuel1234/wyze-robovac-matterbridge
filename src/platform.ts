@@ -37,6 +37,9 @@ import { setTimeout } from 'timers/promises';
 
 export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatform {
 
+  // Matter clean-mode number -> Wyze suction level understood by vacuumSetSuction.py
+  static readonly SUCTION_BY_MODE : Record<number, string> = { 1: 'standard', 3: 'quiet', 4: 'strong' };
+
   private discoverDevicesFinished = false;
   private getCurrentStatusFinished = false;
   private getRoomsFinished = false;
@@ -150,8 +153,13 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
         { label: 'Cleaning', mode: 2, modeTags: [{ value: RvcRunMode.ModeTag.Cleaning }] },
       ], // supportedRunModes
       1, // currentCleanMode
+      // Matter requires at least two clean modes. They map to the S200's suction
+      // levels. Mode 2 is skipped on purpose: older Matterbridge versions send
+      // clean-mode changes to the plain 'changeToMode' handler, where 2 means "start".
       [
-        { label: 'Vacuum', mode: 1, modeTags: [{ value: RvcCleanMode.ModeTag.Vacuum }] },
+        { label: 'Standard', mode: 1, modeTags: [{ value: RvcCleanMode.ModeTag.Vacuum }] },
+        { label: 'Quiet', mode: 3, modeTags: [{ value: RvcCleanMode.ModeTag.Vacuum }, { value: RvcCleanMode.ModeTag.Quiet }] },
+        { label: 'Strong', mode: 4, modeTags: [{ value: RvcCleanMode.ModeTag.Vacuum }, { value: RvcCleanMode.ModeTag.Max }] },
       ], // supportedCleanModes
       null, // currentPhase
       null, // phaseList
@@ -230,6 +238,22 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
       if( request.newMode === 2 ) { // Start vacuuming or Resume if paused
         this.doSweeping();
       }
+    });
+
+    // Matterbridge 3.11+ calls this exact name for clean-mode changes (it only
+    // reaches it while the vacuum is idle). Maps the mode to a Wyze suction level.
+    this.roboticVacuum.addCommandHandler('RvcCleanMode.changeToMode', async ({ request }) => {
+      const level = RoboVacMatterbridgeDynamicPlatform.SUCTION_BY_MODE[request.newMode];
+      if( level === undefined ) {
+        this.log.info(`Unknown clean mode ${request.newMode}; suction left unchanged`);
+        return;
+      }
+      this.log.info(`Setting suction level to ${level}`);
+      this.runPy('vacuumSetSuction.py', [this.nickname, level], (error, _stdout, stderr) => {
+        if( error || stderr ) {
+          this.log.info(`Could not set suction level: ${(stderr || error?.message || '').trim()}`);
+        }
+      });
     });
 
     this.myLogger('before addDevice');
