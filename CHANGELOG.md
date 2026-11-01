@@ -49,4 +49,5 @@ Unofficial security and reliability patch on top of 1.0.1.
 
 ### ** Added **
 
+- Moved `jest`, `rimraf` and the other build/test-only packages from runtime `dependencies` to `devDependencies`; the plugin has no runtime npm dependencies, so installs are much smaller.
 - Three clean modes mapped to the S200's suction levels: Standard, Quiet and Strong. Choosing one in the Home app while the vacuum is idle sets the suction level through the new `py_helpers/vacuumSetSuction.py`. Mode number 2 is deliberately unused so older Matterbridge versions, which route clean-mode changes to the run-mode handler, can't mistake it for "start cleaning".
