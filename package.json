@@ -1,8 +1,8 @@
 {
   "name": "matterbridge-wyze-robovac",
-  "version": "1.0.12",
+  "version": "1.0.13",
   "description": "Wyze RoboVac",
-  "author": "https://github.com/RMCob",
+  "author": "RMCob, patched by zmanuel1234",
   "license": "Apache-2.0",
   "homepage": "https://github.com/zmanuel1234/wyze-robovac-matterbridge#readme",
   "type": "module",

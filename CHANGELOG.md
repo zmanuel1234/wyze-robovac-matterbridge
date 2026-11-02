@@ -80,6 +80,12 @@ Housekeeping only; the plugin behaves exactly as 1.0.1-secure.3.
 - The package ships only what the plugin needs (`files` in package.json): compiled code, Python helpers, settings schema, sample config, README, CHANGELOG, LICENSE. No source maps, type declarations or author tooling.
 - Removed the original author's publish script, CODEOWNERS, devcontainer, legacy .eslintrc, unused tsconfig.production.json and donation image.
 
+## [1.0.13] - 2026-11-01
+
+### Changed
+
+- The plugin's author, shown in the Matterbridge plugin list, reads "RMCob, patched by zmanuel1234". The original author's copyright and licence notices are unchanged.
+
 ## [1.0.12] - 2026-11-01
 
 ### Added
