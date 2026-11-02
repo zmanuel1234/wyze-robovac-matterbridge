@@ -12,8 +12,6 @@
   "busyStatusCheckRefreshInterval": 45,
   "idleStatusCheck1RefreshInterval": 300,
   "idleStatusCheck2RefreshInterval": 60,
-  "path2py_stubs": "",
   "pythonPath": "python3",
-  "tokenFile": "",
-  "debugLevel": 0
+  "tokenFile": ""
 }

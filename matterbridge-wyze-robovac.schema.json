@@ -22,7 +22,7 @@
       "ui:widget": "hidden"
     },
     "whiteList": {
-      "description": "(ONLY SET IF YOU HAVE MULTIPLE VACUUMS) Only THE FIRST ONE device with <Name>-<duid> in the list will be exposed. If the list is empty, THE FIRST device will be exposed.",
+      "description": "Normally leave empty. If not empty, only the devices named here are exposed (this plugin has one device, 'Robot Vacuum').",
       "type": "array",
       "items": {
         "type": "string"
@@ -31,7 +31,7 @@
       "selectFrom": "name"
     },
     "blackList": {
-      "description": "The devices in the list will not be exposed. If the list is empty, no devices will be excluded.",
+      "description": "Normally leave empty. Devices named here are not exposed.",
       "type": "array",
       "items": {
         "type": "string"
@@ -99,12 +99,6 @@
       "default": 60,
       "minimum": 60
     },
-    "path2py_stubs": {
-      "title": "Path to Python helper scripts",
-      "description": "Folder with the Python helper scripts. Leave empty to use the ones bundled with the plugin.",
-      "type": "string",
-      "default": ""
-    },
     "pythonPath": {
       "title": "Python interpreter",
       "description": "Python used to run the helpers, e.g. the python inside a virtual environment that has wyze-sdk installed (/opt/wyze-venv/bin/python). Default: python3",
@@ -116,14 +110,6 @@
       "description": "Where the Wyze access/refresh tokens are saved (created with owner-only permissions). Default: ~/.matterbridge/wyze-robovac/tokens.json",
       "type": "string",
       "default": ""
-    },
-    "debugLevel": {
-      "title": "Debug Level",
-      "description": "Specify the Debug Level. 0 ==> no debug output, 1 ==> debug output to Matterbridge logfile, 2 ==> system level logging",
-      "type": "number",
-      "default": 0,
-      "minimum": 0,
-      "maximum": 2
     }
   }
 }

@@ -80,6 +80,19 @@ Housekeeping only; the plugin behaves exactly as 1.0.1-secure.3.
 - The package ships only what the plugin needs (`files` in package.json): compiled code, Python helpers, settings schema, sample config, README, CHANGELOG, LICENSE. No source maps, type declarations or author tooling.
 - Removed the original author's publish script, CODEOWNERS, devcontainer, legacy .eslintrc, unused tsconfig.production.json and donation image.
 
+## [1.0.11] - 2026-11-01
+
+### Added
+
+- The room list is read again from Wyze every 6 hours while the vacuum is docked and idle, so rooms renamed or added in the Wyze app show up in Home without restarting the plugin. Rooms keep their IDs, so selections in Home stay valid; rooms that disappeared are dropped from the selection.
+- Selecting rooms on more than one floor logs a clear warning naming the rooms that were skipped (the vacuum cleans one floor per run). Previously they were left out silently.
+
+### Changed
+
+- Removed the settings `path2py_stubs` (the bundled helpers are always used) and `debugLevel` (troubleshooting detail now follows Matterbridge's own log level). Both are ignored if still in a saved configuration.
+- Clearer descriptions for the white list and black list settings.
+- With no rooms selected, the first floor's "*Entire Floor*" area is looked up by name rather than assumed to be area 1.
+
 ## [1.0.10] - 2026-11-01
 
 ### Added

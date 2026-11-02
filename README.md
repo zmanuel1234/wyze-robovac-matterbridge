@@ -8,7 +8,7 @@
 
 Matterbridge plugin to control and report status of the Wyze S200 Robot Vacuum
 
-> **1.0.10** is an unofficial, patched version of the original 1.0.1: secure credential handling, token caching, authenticator-app 2FA, Matterbridge 3.11 support, full vacuum state and fault reporting, and suction modes. See `CHANGELOG.md`. Don't install updates offered in the Matterbridge UI: they would replace it with the original plugin.
+> **1.0.11** is an unofficial, patched version of the original 1.0.1: secure credential handling, token caching, authenticator-app 2FA, Matterbridge 3.11 support, full vacuum state and fault reporting, and suction modes. See `CHANGELOG.md`. Don't install updates offered in the Matterbridge UI: they would replace it with the original plugin.
 
 A Robot Vacuum Cleaner device (supported by SmartThings, Alexa, Home Assistant and partially by Apple Home). Read also https://github.com/Luligu/matterbridge/discussions/264. 
 
@@ -28,6 +28,7 @@ Based on the original plugin by Rob Coben: https://github.com/RMCob/matterbridge
 - Shows the vacuum's real state, including runs started from the Wyze app, a schedule or the button: cleaning, paused, returning to the dock, charging (also "charging, will resume") and docked.
 - Shows Wyze faults as Matter errors while the vacuum is away from the dock: stuck, wheels jammed, lidar blocked, dust bin / water tank / mop missing, failed to find the dock, and so on.
 - Offers three cleaning modes mapped to the suction levels: Standard, Quiet and Strong (set while the vacuum is docked). A level changed in the Wyze app shows up in Home at the next status check.
+- Offers the rooms and floors from the Wyze app as areas to clean. Changes made in the Wyze app (renamed or new rooms) show up within about 6 hours, checked while the vacuum is docked. Rooms on one floor are cleaned per run; if rooms on several floors are selected, the first room's floor is cleaned and the log says which rooms were skipped.
 - Reports the battery level and whether it is charging, and tells Home the battery is low at 20 % or less (critically low at 10 %) while the vacuum is away from its dock.
 
 ## Caveats
@@ -64,10 +65,8 @@ Use the settings UI in Matterbridge browser interface to configure your Wyze acc
       "busyStatusCheckRefreshInterval": 45,
       "idleStatusCheck1RefreshInterval": 300,
       "idleStatusCheck2RefreshInterval": 60,
-      "path2py_stubs": "",
       "pythonPath": "/opt/wyze-venv/bin/python",
-      "tokenFile": "",
-      "debugLevel": 0
+      "tokenFile": ""
     }
   ]
 }
@@ -78,10 +77,11 @@ Use the settings UI in Matterbridge browser interface to configure your Wyze acc
 - **`totpKey`** – Only if your Wyze account uses an authenticator app for two-factor authentication. This is the secret key shown when you set up the app (the text behind the QR code), not a 6-digit code. It is used only when the plugin has to log in from scratch. SMS two-factor authentication cannot be used unattended.
 - **`pythonPath`** – The Python interpreter that has `wyze-sdk` installed, e.g. the `python` inside a virtual environment. Defaults to `python3`.
 - **`tokenFile`** – Where Wyze access/refresh tokens are cached (owner-only permissions). Defaults to `~/.matterbridge/wyze-robovac/tokens.json`.
-- **`path2py_stubs`** – Folder with the Python helper scripts. Leave empty to use the ones bundled with the plugin.
 - **`busyStatusCheckRefreshInterval`** – Seconds between status checks while the vacuum is cleaning, paused or returning to the dock. Defaults to 45 (minimum 25).
 - **`idleStatusCheck1RefreshInterval`** – Seconds between status checks when docked with a full battery. Defaults to 300 (5 min, the minimum). This is also how quickly a run started outside Home shows up.
 - **`idleStatusCheck2RefreshInterval`** – Seconds between status checks when docked and charging. Defaults to 60 (1 min, the minimum).
+
+For troubleshooting detail, set Matterbridge's own log level to Debug. (The old `debugLevel` and `path2py_stubs` settings are gone and are ignored if still present.)
 
 ### How credentials are handled
 
