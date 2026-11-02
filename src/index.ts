@@ -3,7 +3,6 @@
  *
  * @file index.ts
  * @author Rob Coben
- * @version 1.0.0
  * @license Apache-2.0
  *
  * Copyright 2025, 2026 Rob Coben

@@ -95,18 +95,11 @@ def _write_private_json(path, data):
 
 
 def _save_tokens(client):
-    _ensure_dir()
-    data = {
+    _write_private_json(_token_file, {
         "access_token": client._token,
         "refresh_token": client._refresh_token,
         "saved_at": int(time.time()),
-    }
-    tmp = _token_file + ".tmp"
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump(data, f)
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, _token_file)
+    })
 
 
 class _Lock:
@@ -154,10 +147,7 @@ def _login_blocked():
 
 
 def _record_login_failure(reason):
-    _ensure_dir()
-    fd = os.open(_fail_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump({"at": int(time.time()), "creds": _creds_fingerprint(), "reason": reason}, f)
+    _write_private_json(_fail_file, {"at": int(time.time()), "creds": _creds_fingerprint(), "reason": reason})
 
 
 def _full_login():
@@ -244,10 +234,11 @@ def run(body):
             if _is_token_error(e):
                 client = _reauth(stale_token=client._token)
                 return body(client)
-            if _used_cached_mac:
-                # The remembered vacuum ID may be stale (vacuum replaced or re-added):
-                # forget it and look the vacuum up again, once.
-                _forget_macs()
+            if _used_cached_mac and _cached_mac_is_stale(client):
+                # The remembered vacuum ID was out of date (vacuum replaced or re-added):
+                # it is forgotten now, so the second run looks the vacuum up again.
+                # Only retried when the ID was wrong, so a command that reached the
+                # vacuum is never sent twice.
                 _used_cached_mac = False
                 return body(client)
             raise
@@ -255,6 +246,8 @@ def run(body):
         fail(str(e))
     except WyzeApiError as e:
         fail("Got an error: " + str(e).split("\n")[0])
+    except Exception as e:  # network trouble etc.: one line instead of a traceback
+        fail(f"Wyze request failed: {type(e).__name__}: " + (str(e).split("\n")[0] or "no details"))
 
 
 def _forget_macs():
@@ -262,6 +255,20 @@ def _forget_macs():
         os.remove(_devices_file)
     except OSError:
         pass
+
+
+def _cached_mac_is_stale(client):
+    """True (and the cache dropped) if the remembered vacuum ID is no longer on the account."""
+    try:
+        with open(_devices_file, "r", encoding="utf-8") as f:
+            cached = set(json.load(f).values())
+        current = {d.mac for d in client.devices_list() if d.product.model == VACUUM_MODEL}
+    except (OSError, ValueError, WyzeApiError):
+        return False
+    if cached & current:
+        return False
+    _forget_macs()
+    return True
 
 
 def find_vacuum_mac(client, nickname):

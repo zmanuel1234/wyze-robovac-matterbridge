@@ -9,7 +9,7 @@
 
 Matterbridge plugin to control and report status of the Wyze S200 Robot Vacuum
 
-> **1.0.5** is an unofficial, patched version of the original 1.0.1: secure credential handling, token caching, authenticator-app 2FA, Matterbridge 3.11 support, full vacuum state and fault reporting, and suction modes. See `CHANGELOG.md`. Don't install updates offered in the Matterbridge UI: they would replace it with the original plugin.
+> **1.0.6** is an unofficial, patched version of the original 1.0.1: secure credential handling, token caching, authenticator-app 2FA, Matterbridge 3.11 support, full vacuum state and fault reporting, and suction modes. See `CHANGELOG.md`. Don't install updates offered in the Matterbridge UI: they would replace it with the original plugin.
 
 A Robot Vacuum Cleaner device (supported by SmartThings, Alexa, Home Assistant and partially by Apple Home). Read also https://github.com/Luligu/matterbridge/discussions/264. 
 

@@ -20,11 +20,8 @@ def body(client):
             new_floor_id = map_summary.id
 
     if new_floor_id == 0:
-        print(f"     '{new_floor_name}' is not a valid floor name")
-        print("     Valid names are:")
-        for map_summary in maps:
-            print(f"          {map_summary.name.strip()}")
-        sys.exit(1)
+        valid = ", ".join(f"'{m.name.strip()}'" for m in maps)
+        fail(f"'{new_floor_name}' is not a floor of this vacuum. Floors: {valid}")
 
     client.vacuums.set_current_map(device_mac=device_mac, map_id=new_floor_id)
     print(f"    current floor is now: {new_floor_name}")

@@ -3,7 +3,6 @@
  *
  * @file platform.ts
  * @author Rob Coben
- * @version 0.0.5
  * @license Apache-2.0
  *
  * Copyright 2025, 2026 Rob Coben
@@ -34,13 +33,15 @@ import { setTimeout } from 'timers/promises';
 
 export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatform {
 
-  // Matter clean-mode number -> Wyze suction level understood by vacuumSetSuction.py
   // How long after a Home command the vacuum gets to react (Wyze takes 10-15 s)
   // before a poll that still shows the old state may overwrite what Home displays.
   static readonly COMMAND_GRACE_MS = 40_000;
 
+  // Matter clean-mode number -> Wyze suction level understood by vacuumSetSuction.py
   static readonly SUCTION_BY_MODE : Record<number, string> = { 1: 'standard', 3: 'quiet', 4: 'strong' };
 
+  // Oldest Matterbridge this version has been tested with.
+  static readonly MIN_MATTERBRIDGE = '3.11.0';
 
   private nickname : string = 'RoboVac';
   private macAddr : string = '';
@@ -56,18 +57,17 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
                                         landmarkInfo: null } }[] = [];
 
   private selectedAreas : number[] = [];
-  private currentMapId : number = -1;
   private isDocked = true;
   private fault : string = 'None';   // Wyze fault name from the last status check, e.g. 'COLLISION_EXCEPTION'
   private newRoomsSelected : boolean = false;
 
   private pokeStatusLoop : boolean = false;
+  private stopping : boolean = false;        // set on shutdown; ends the status loop
+  private statusCheck : Promise<number> | undefined;   // the status check in progress, if any
   private statusRefreshInterval : number = 0;
   private oldRefreshInterval : number = 0;
 
   private roboticVacuum: MatterbridgeEndpoint | undefined;
-
-  bridgedDevices = new Map<string, MatterbridgeEndpoint>();
 
   // The type Matterbridge passes in was renamed across 3.x releases; take it from the base class.
   constructor(matterbridge: ConstructorParameters<typeof MatterbridgeDynamicPlatform>[0], log: AnsiLogger, config: PlatformConfig) {
@@ -75,11 +75,10 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
 
     // Verify that Matterbridge is the correct version
     if (this.verifyMatterbridgeVersion === undefined || typeof this.verifyMatterbridgeVersion !== 'function'
-                                                     || !this.verifyMatterbridgeVersion('3.3.3')) {
+                    || !this.verifyMatterbridgeVersion(RoboVacMatterbridgeDynamicPlatform.MIN_MATTERBRIDGE)) {
       throw new Error(
-        `This plugin requires Matterbridge version >= "3.3.3".
-         Please update Matterbridge from ${this.matterbridge.matterbridgeVersion}
-         to the latest version in the frontend.`,
+        `This plugin requires Matterbridge ${RoboVacMatterbridgeDynamicPlatform.MIN_MATTERBRIDGE} or later. ` +
+        `Please update Matterbridge from ${this.matterbridge.matterbridgeVersion} in the frontend.`,
       );
     }
 
@@ -115,8 +114,19 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
     await this.ready;
     await this.clearSelect();
 
-    await this.findDevices();   // Get nickname for vacuum
-    this.myLogger(`After findDevices(), this.nickname = '${this.nickname}'`);
+    // Get the vacuum's nickname and MAC. Wyze can be briefly unreachable while the
+    // Pi boots, so try a few times before giving up.
+    for( let attempt = 1; attempt <= 3 && !this.macAddr && !this.stopping; attempt++ ) {
+      if( attempt > 1 ) {
+        await setTimeout(30_000);
+      }
+      await this.findDevices();
+    }
+    if( !this.macAddr ) {
+      this.log.error('No Wyze robot vacuum found on the account (see the messages above). ' +
+        'Fix the settings or the connection, then restart the plugin.');
+      return;
+    }
 
     await this.getRoomList();
 
@@ -156,7 +166,7 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
         {
           areaId: 1,
           mapId: 1,
-          areaInfo: { locationInfo: { locationName: 'Living', floorNumber: 0, areaType: null },
+          areaInfo: { locationInfo: { locationName: 'Entire floor', floorNumber: 0, areaType: null },
             landmarkInfo: null },
         },
       ], // supportedAreas
@@ -165,26 +175,33 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
       [
         {
           mapId: 1,
-          name: 'Ground floor',
+          name: 'Current floor',
         },
       ], // supportedMaps
     );
 
     if (this.config.enableServerRvc === true) {
-      this.log.notice('RVC is in server mode 66');
+      this.log.notice('The vacuum runs as its own Matter device (server mode)');
     }
 
+    /*
+     * Matterbridge runs these handlers first and then sets the state it expects
+     * (Paused, Running, Returning to dock) itself. So when Wyze refuses a command,
+     * the real state is written by the next status check, after the handler returns
+     * (see afterCommand), not from inside the handler, where it would be overwritten.
+     */
     this.roboticVacuum.addCommandHandler('pause', async () => {
       this.log.info('\'pause\' handler called - RoboVac');
-      await this.pauseSweeping();
-      this.lastAppliedState = this.stateKey(2, RvcOperationalState.OperationalState.Paused);
-      this.commandGraceUntil = Date.now() + RoboVacMatterbridgeDynamicPlatform.COMMAND_GRACE_MS;
-      this.pokeStatusLoop = true;
+      if( await this.pauseSweeping() ) {
+        this.lastAppliedState = this.stateKey(2, RvcOperationalState.OperationalState.Paused);
+        this.commandGraceUntil = Date.now() + RoboVacMatterbridgeDynamicPlatform.COMMAND_GRACE_MS;
+        this.pokeStatusLoop = true;
+      }
     });
 
     this.roboticVacuum.addCommandHandler('resume', async () => {
       this.log.info('\'resume\' handler called - RoboVac');
-      this.doSweeping();
+      this.sweepInBackground();
     });
 
     // Returns as soon as the dock command is sent: Matterbridge shows "returning to dock"
@@ -193,12 +210,7 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
     // Home app's command, and the tile, for minutes.)
     this.roboticVacuum.addCommandHandler('goHome', async () => {
       this.log.info('\'goHome\' handler called - RoboVac');
-      await this.stopSweeping();
-      // Matterbridge sets "returning to dock" itself but leaves the run mode alone, so
-      // forget what was shown: the first check after the grace period writes both.
-      this.lastAppliedState = '';
-      this.commandGraceUntil = Date.now() + RoboVacMatterbridgeDynamicPlatform.COMMAND_GRACE_MS;
-      this.pokeStatusLoop = true;
+      await this.sendHome();
     });
 
     this.roboticVacuum.addCommandHandler('selectAreas', async ({ request }) => {
@@ -212,9 +224,11 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
     });
 
     this.roboticVacuum.addCommandHandler('changeToMode', async ({ request }) => {
-      this.myLogger(`'changeToMode' handler called - RoboVac. New mode = ${request.newMode}`); // 1 == Idle, 2 == Running
-      if( request.newMode === 2 ) { // Start vacuuming or Resume if paused
-        this.doSweeping();
+      this.myLogger(`'changeToMode' handler called - RoboVac. New mode = ${request.newMode}`); // 1 == Idle, 2 == Cleaning
+      if( request.newMode === 2 ) {          // Start vacuuming, or resume if paused
+        this.sweepInBackground();
+      } else if( request.newMode === 1 ) {   // Stop: Matterbridge then shows "returning to dock"
+        await this.sendHome();
       }
     });
 
@@ -237,10 +251,10 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
     this.roboticVacuum = await this.addDevice(this.roboticVacuum);
 
     this.setupSupportedAreas();   // rooms & floors as defined in the Wyze app.
-    this.myLogger('after setupSupportedAreas');
-    this.myLogger('debugStringify( this.supportedMaps ):');
-    this.myLogger( debugStringify( this.supportedMaps));
-    if( this.roboticVacuum ) {
+    this.myLogger(`Floors: ${debugStringify(this.supportedMaps)}`);
+    // Without a room list (Wyze unreachable), keep the single default area: starting
+    // then cleans the whole current floor.
+    if( this.roboticVacuum && this.supportedAreas.length > 0 ) {
       await this.roboticVacuum.updateAttribute(ServiceArea.Cluster.id, 'supportedMaps', this.supportedMaps, this.log);
       await this.roboticVacuum.updateAttribute(ServiceArea.Cluster.id, 'supportedAreas', this.supportedAreas, this.log);
     }
@@ -252,10 +266,14 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
   override async onConfigure() {
     await super.onConfigure();
     this.myLogger('onConfigure called - RoboVac');
-    await this.getStatus();
+    if( this.roboticVacuum ) {
+      await this.getStatus();
+    }
   }
 
   override async onShutdown(reason?: string) {
+    this.stopping = true;        // ends the status loop
+    this.pokeStatusLoop = true;
     await super.onShutdown(reason);
     const out : string = reason ? reason : 'none';
     this.myLogger(`onShutdown - RoboVac called with reason = '${out}'`);
@@ -269,7 +287,6 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
     this.setSelectDevice(device.serialNumber, device.deviceName, undefined, 'hub');
     if (this.validateDevice(device.deviceName)) {
       await this.registerDevice(device);
-      this.bridgedDevices.set(device.deviceName, device);
       return device;
     } else {
       return undefined;
@@ -291,8 +308,10 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
     if( this.selectedAreas.length > 0 && firstArea ) {
       mapId = firstArea.mapId;
     }
-    this.currentMapId = mapId;
-    const floorName = this.supportedMaps.find((m) => m.mapId === mapId)?.name ?? '';
+    const floorName = this.supportedMaps.find((m) => m.mapId === mapId)?.name;
+    if( floorName === undefined ) {
+      return;   // no room list from Wyze: clean whichever floor is current
+    }
     const r = await this.py('setVacuumFloor.py', [this.nickname, floorName]);
     if( r.ok ) {
       this.myLogger(`Current map set to floor '${floorName}'`);
@@ -303,50 +322,73 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
 
   /***************** Resume, pause, dock, start **********************/
 
+  // Each returns true when Wyze accepted the command.
+
   // Resume after a pause.
-  async startCleaning() {
-    const r = await this.py('vacuumStartClean.py', [this.nickname]);
-    await this.afterCommand('Resume', r);
+  async startCleaning() : Promise<boolean> {
+    return this.afterCommand('Resume', await this.py('vacuumStartClean.py', [this.nickname]));
   }
 
-  async pauseSweeping() {
-    const r = await this.py('vacuumPauseSweep.py', [this.nickname]);
-    await this.afterCommand('Pause', r);
+  async pauseSweeping() : Promise<boolean> {
+    return this.afterCommand('Pause', await this.py('vacuumPauseSweep.py', [this.nickname]));
   }
 
-  async stopSweeping() {
-    const r = await this.py('vacuumStopSweep.py', [this.nickname]);
-    await this.afterCommand('Return to dock', r);
+  async stopSweeping() : Promise<boolean> {
+    return this.afterCommand('Return to dock', await this.py('vacuumStopSweep.py', [this.nickname]));
   }
 
-  async startSweeping() {
+  async startSweeping() : Promise<boolean> {
     const roomNames : string[] = this.selectedAreas
       .map((id) => this.supportedAreas.find((a) => a.areaId === id)?.areaInfo.locationInfo.locationName)
       .filter((name) : name is string => name !== undefined);
+    if( roomNames.length === 0 ) {
+      roomNames.push('*Entire Floor*');   // matches no room, so the helper cleans the whole floor
+    }
     this.log.info(`Rooms to be swept = '${roomNames.join(', ')}'`);
-    const r = await this.py('vacuumStartSweep.py', [this.nickname, ...roomNames]);
-    await this.afterCommand('Start cleaning', r);
+    return this.afterCommand('Start cleaning', await this.py('vacuumStartSweep.py', [this.nickname, ...roomNames]));
   }
 
-  // A helper refused a command because the vacuum wasn't in the expected state (for
-  // example "already docked"): show the real state in the Home app right away.
-  async afterCommand(what : string, r : { ok : boolean, stdout : string, stderr : string }) {
+  // When Wyze refuses or fails a command (for example "already docked"), the Home app
+  // is showing a state the vacuum isn't in: have the status loop write the real one
+  // straight away, once the command handler has returned.
+  afterCommand(what : string, r : { ok : boolean, stdout : string, stderr : string }) : boolean {
     if( r.ok ) {
       this.myLogger(`${what}: ${r.stdout.trim()}`);
-      return;
+      return true;
     }
     this.log.info(`${what} not done: ${r.stderr}`);
-    if( /docked|already sweeping/i.test(r.stderr) ) {
-      this.commandGraceUntil = 0;
+    this.commandGraceUntil = 0;
+    this.lastAppliedState = '';
+    this.pokeStatusLoop = true;
+    return false;
+  }
+
+  // Dock command from Home (goHome, or run mode Idle). Matterbridge shows "returning
+  // to dock" once the handler returns but leaves the run mode alone, so forget what
+  // was shown: the first check after the grace period writes both.
+  async sendHome() {
+    if( await this.stopSweeping() ) {
       this.lastAppliedState = '';
-      await this.getStatus();
+      this.commandGraceUntil = Date.now() + RoboVacMatterbridgeDynamicPlatform.COMMAND_GRACE_MS;
+      this.pokeStatusLoop = true;
     }
   }
 
   /***************** Status **********************/
 
   // Polls the vacuum, updates the Home app, and returns the seconds until the next poll.
-  async getStatus() : Promise<number> {
+  // Callers arriving while a check is already running share its result, so two checks
+  // never run (and write to the Home app) at the same time.
+  getStatus() : Promise<number> {
+    if( !this.statusCheck ) {
+      this.statusCheck = this.checkStatus().finally(() => {
+        this.statusCheck = undefined;
+      });
+    }
+    return this.statusCheck;
+  }
+
+  private async checkStatus() : Promise<number> {
     const r = await this.py('getVacuumStatus.py', [this.nickname]);
     if( !r.ok ) {
       this.log.info(`Status check failed: ${r.stderr}`);
@@ -354,16 +396,22 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
     }
     // "mode:battery:is_charging:fault", e.g. "VacuumMode.IDLE:87:True:None"
     const fields = r.stdout.trim().split(':');
+    const battery = Number(fields[1]);
+    const batteryKnown = fields[1] !== undefined && fields[1] !== '' && Number.isInteger(battery) && battery >= 0 && battery <= 100;
     this.currentStatus = fields[0];
-    this.batteryLevel = Number(fields[1]);
     this.isDocked = (fields[2] ?? '').toLowerCase() === 'true';
     this.fault = fields[3] ?? 'None';
+    if( batteryKnown ) {
+      this.batteryLevel = battery;
+    } else {
+      this.log.info(`Wyze reported no usable battery level ('${fields[1] ?? ''}'); keeping ${this.batteryLevel}%`);
+    }
     this.myLogger(`Status: ${this.currentStatus}, battery ${this.batteryLevel}%, charging ${this.isDocked}, fault ${this.fault}`);
 
-    if( this.roboticVacuum !== undefined ) {
+    if( this.roboticVacuum !== undefined && batteryKnown ) {
       await this.roboticVacuum.updateAttribute(PowerSource.Cluster.id, 'batPercentRemaining', this.batteryLevel * 2, this.log);
       let chargeState = PowerSource.BatChargeState.IsNotCharging;
-      if( this.batteryLevel === 100 ) {
+      if( this.batteryLevel === 100 && this.isDocked ) {
         chargeState = PowerSource.BatChargeState.IsAtFullCharge;
       } else if( this.isDocked ) {
         chargeState = PowerSource.BatChargeState.IsCharging;
@@ -434,7 +482,7 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
     }
   }
 
-  // Lines of "room:floor", including one "*Entire Floor*:floor" per floor.
+  // Lines of "room<TAB>floor", including one "*Entire Floor*<TAB>floor" per floor.
   async getRoomList() {
     const r = await this.py('getVacuumFloors.py', [this.nickname]);
     if( !r.ok ) {
@@ -573,20 +621,11 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
     return `${runMode}:${opState}`;
   }
 
-  // Statuses at which a run started from Home counts as over (cleaning finished,
-  // paused, or docked to recharge mid-run).
-  isSettled() : boolean {
-    const mode = this.currentStatus.replace(/^VacuumMode\./, '');
-    return ['IDLE', 'PAUSED', 'PAUSE', 'BREAK_POINT', 'QUICK_MAPPING_PAUSED',
-      'DOCKED_NOT_COMPLETE', 'QUICK_MAPPING_DOCKED_NOT_COMPLETE'].includes(mode);
-  }
-
   myLogger( line : string ) {
     switch( this.config.debugLevel ) {
       case 0:   // No logging
         return;
-        break;
-      case 1:   // Logging to homebridge.log
+      case 1:   // Logging to the Matterbridge log
         this.log.info( line );
         break;
       case 2:   // Logging to system level logs.
@@ -599,13 +638,14 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
   setupSupportedAreas() {
     let floorCntr = 0;
     let roomCntr = 0;
-    let saveFloorName = '';
+    let saveFloorName : string | undefined;
+    this.supportedMaps = [];
+    this.supportedAreas = [];
 
     for (const room of this.rooms) {
       roomCntr++;
-      const tmpList = room.split(':');
-      const roomName = tmpList[0];;
-      const floorName = tmpList[1];
+      // Tab-separated, so room and floor names may contain ':'.
+      const [roomName, floorName = ''] = room.split('\t');
       if( floorName !== saveFloorName ) {
         saveFloorName = floorName;
         floorCntr++;
@@ -639,44 +679,41 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
     }
   }
 
+  // Start or resume from a Home command without holding the command up: picking the
+  // floor and starting takes Wyze 20-30 s, longer than the Home app waits for a reply.
+  sweepInBackground() {
+    this.doSweeping().catch((e) => this.log.error(`Start/resume failed: ${e instanceof Error ? e.message : String(e)}`));
+  }
+
   async doSweeping() {
+    // Polls during the next steps must not undo the "cleaning" Matterbridge just showed.
+    this.commandGraceUntil = Date.now() + RoboVacMatterbridgeDynamicPlatform.COMMAND_GRACE_MS;
     // Decide between "start a new run" and "resume" on the vacuum's current status,
     // not on the last poll, which can be from before a pause.
     await this.getStatus();
+    let ok : boolean;
     if( this.currentStatus === 'VacuumMode.IDLE' || this.newRoomsSelected ) {
-      /*
-       *   Check for special case of '*Entire Floor*' being checked In addition to other rooms.
-       *   If true, remove the other rooms from the list
-       */
-      if( this.selectedAreas.length > 0 ) {
-        for (let i = 0; i < this.selectedAreas.length; i++) {
-          const areaId = this.selectedAreas[i];
-          this.myLogger(`before StartSweep, selectedRoom[${i}] = '${areaId}'`);
-          for (let j = 0; j < this.supportedAreas.length; j++) {
-            const area = this.supportedAreas[j];
-            if( area.areaId === areaId ) {
-              this.myLogger(`selected room name = '${area.areaInfo.locationInfo.locationName}'`);
-              if( area.areaInfo.locationInfo.locationName === '*Entire Floor*' ) {
-                this.selectedAreas.length = 0;
-                this.selectedAreas.push( area.areaId );
-                this.log.info('Changing selected room(s) to be "*Entire Floor*"');
-                break;
-              }
-            }
-          }
-        }
-      } else { // No rooms are selected. Assume '*Entire Floor*' on 1st floor
+      if( this.selectedAreas.length === 0 ) {
+        // No rooms selected: area 1, the first floor's "*Entire Floor*" (or the default area).
         this.selectedAreas.push( 1 );
-        this.log.info('Changing selected room to be "*Entire Floor*"');
+        this.log.info('No rooms selected; cleaning the entire first floor');
       }
-      /*
-      * Start sweeping
-      */
+      // "*Entire Floor*" selected together with rooms: clean the whole floor.
+      const entireFloor = this.selectedAreas
+        .map((id) => this.supportedAreas.find((a) => a.areaId === id))
+        .find((a) => a?.areaInfo.locationInfo.locationName === '*Entire Floor*');
+      if( entireFloor && this.selectedAreas.length > 1 ) {
+        this.selectedAreas = [entireFloor.areaId];
+        this.log.info('Changing selected room(s) to be "*Entire Floor*"');
+      }
       this.newRoomsSelected = false;
-      await this.setFloor();     // Set current floor based on what rooms were selected
-      await this.startSweeping();   // Start sweeping when docked
+      await this.setFloor();          // Set current floor based on what rooms were selected
+      ok = await this.startSweeping();
     } else {
-      await this.startCleaning();   // Resume cleaning after a pause
+      ok = await this.startCleaning();   // Resume cleaning after a pause
+    }
+    if( !ok ) {
+      return;   // afterCommand has the status loop show the real state
     }
     if( this.roboticVacuum ) {
       await this.roboticVacuum.setAttribute('RvcRunMode', 'currentMode', 2, this.log); // Cleaning
@@ -695,16 +732,14 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
   }
 
   async startStatusLoop() {
-    while( true ) {
-      const refreshInterval = Number(await this.getStatus() );
-      this.myLogger(`in startStatusLoop(): after getStatus(): refreshInterval = ${refreshInterval} seconds`);
-      for( let i = 0; i < refreshInterval; i++ ) {
-        if( this.pokeStatusLoop ) {
-          break;   // Something external poked here. Re-evaluate for statusRefreshInterval
-        }
-        await setTimeout(1000);
-      }
+    while( !this.stopping ) {
       this.pokeStatusLoop = false;
+      const refreshInterval = Number(await this.getStatus()) || 60;   // 60 s if the settings are unusable
+      this.myLogger(`in startStatusLoop(): after getStatus(): refreshInterval = ${refreshInterval} seconds`);
+      for( let i = 0; i < refreshInterval && !this.pokeStatusLoop && !this.stopping; i++ ) {
+        await setTimeout(1000);   // a command or shutdown ends the wait early
+      }
     }
+    this.myLogger('Status loop stopped');
   }
 }

@@ -80,6 +80,30 @@ Housekeeping only; the plugin behaves exactly as 1.0.1-secure.3.
 - The package ships only what the plugin needs (`files` in package.json): compiled code, Python helpers, settings schema, sample config, README, CHANGELOG, LICENSE. No source maps, type declarations or author tooling.
 - Removed the original author's publish script, CODEOWNERS, devcontainer, legacy .eslintrc, unused tsconfig.production.json and donation image.
 
+## [1.0.6] - 2026-11-01
+
+Bug fixes and cleanup (unofficial patched version).
+
+### Fixed
+
+- A command Wyze refuses or fails (for example "pause" while docked) no longer leaves the Home app showing Paused, Cleaning or Returning: the real state is shown at the next check, a second or so later. Previously it was corrected inside the command, and Matterbridge then overwrote the correction.
+- A failed start or resume no longer marks the vacuum as cleaning.
+- Switching the run mode to Idle in the Home app now sends the vacuum to the dock. Before, Home showed "returning to dock" while it kept cleaning.
+- Rooms and floors whose names contain ':' are read correctly (the helper now separates them with a tab).
+- Starting works when the room list couldn't be read at startup (the whole current floor is cleaned).
+- If Wyze is unreachable at startup, the vacuum lookup is retried twice, 30 s apart, with a clear error if it still fails.
+- A missing battery reading no longer shows 0 %. "Fully charged" is only shown on the dock.
+- Overlapping status checks (status loop, startup, commands) share one Wyze request instead of running side by side.
+- The status loop stops when Matterbridge shuts the plugin down.
+- A remembered vacuum ID is only discarded, and a command only retried, when the ID really is out of date, so a command that reached the vacuum is never sent twice.
+- Network errors are logged as one line instead of a Python traceback; an unknown floor name gives a clear error.
+
+### Changed
+
+- Requires Matterbridge 3.11.0 or later (the version tested); the old check said 3.3.3.
+- The placeholder area shown before the Wyze room list loads is named "Entire floor".
+- Removed unused code and stale comments; token and status files share one private-file writer.
+
 ## [1.0.5] - 2026-11-01
 
 From here on this patched line uses plain version numbers (1.0.5, 1.0.6, ...). The earlier builds were named 1.0.1-secure.1 to 1.0.1-secure.4; 1.0.5 is the same code as the build first named 1.0.1-secure.5.
