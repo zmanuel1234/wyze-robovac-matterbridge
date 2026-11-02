@@ -80,6 +80,15 @@ Housekeeping only; the plugin behaves exactly as 1.0.1-secure.3.
 - The package ships only what the plugin needs (`files` in package.json): compiled code, Python helpers, settings schema, sample config, README, CHANGELOG, LICENSE. No source maps, type declarations or author tooling.
 - Removed the original author's publish script, CODEOWNERS, devcontainer, legacy .eslintrc, unused tsconfig.production.json and donation image.
 
+## [1.0.9] - 2026-11-01
+
+### Changed
+
+- Faster: the plugin now starts one Python helper (`py_helpers/wyze_worker.py`) and keeps it running, instead of starting Python and loading wyze-sdk again for every status check and command. On a Raspberry Pi that start-up took seconds per command; starting from Home used three in a row.
+- Credentials go to the helper over its input pipe, so they are no longer in any process's environment while it runs.
+- The helper answers one request at a time. If it doesn't answer within 90 seconds it is restarted; if it exits, the next request starts a new one. It exits when Matterbridge stops the plugin.
+- The individual helper scripts still work on their own, for testing by hand (same arguments and output as before).
+
 ## [1.0.8] - 2026-11-01
 
 ### Changed

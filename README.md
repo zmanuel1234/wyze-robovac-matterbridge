@@ -8,7 +8,7 @@
 
 Matterbridge plugin to control and report status of the Wyze S200 Robot Vacuum
 
-> **1.0.8** is an unofficial, patched version of the original 1.0.1: secure credential handling, token caching, authenticator-app 2FA, Matterbridge 3.11 support, full vacuum state and fault reporting, and suction modes. See `CHANGELOG.md`. Don't install updates offered in the Matterbridge UI: they would replace it with the original plugin.
+> **1.0.9** is an unofficial, patched version of the original 1.0.1: secure credential handling, token caching, authenticator-app 2FA, Matterbridge 3.11 support, full vacuum state and fault reporting, and suction modes. See `CHANGELOG.md`. Don't install updates offered in the Matterbridge UI: they would replace it with the original plugin.
 
 A Robot Vacuum Cleaner device (supported by SmartThings, Alexa, Home Assistant and partially by Apple Home). Read also https://github.com/Luligu/matterbridge/discussions/264. 
 
@@ -85,7 +85,7 @@ Use the settings UI in Matterbridge browser interface to configure your Wyze acc
 
 ### How credentials are handled
 
-The plugin never passes credentials on a command line and never logs them. Each helper receives them in its environment, logs in at most once, and then reuses a cached access token, refreshing it when it expires. If a login fails, it waits 15 minutes (or until the settings change) before trying again. See `CHANGELOG.md` for details.
+The plugin talks to Wyze through one Python helper process that it starts once and keeps running, so Python and wyze-sdk are loaded only once instead of for every command. Credentials are sent to that helper over its input pipe: they never appear on a command line, in a process environment or in the logs. The helper logs in at most once and then reuses a cached access token, refreshing it when it expires. If it stops answering for 90 seconds or exits, the plugin starts a new one. If a login fails, it waits 15 minutes (or until the settings change) before trying again. See `CHANGELOG.md` for details.
 
 ## To Do
 

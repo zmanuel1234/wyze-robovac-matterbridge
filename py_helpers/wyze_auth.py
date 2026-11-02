@@ -1,8 +1,12 @@
 """
 Shared Wyze login for the matterbridge-wyze-robovac helper scripts.
 
-Credentials arrive in environment variables set by the plugin (never on the
-command line, so they are not visible in `ps`):
+Used two ways: by wyze_worker.py, the long-running helper the plugin talks to,
+and by the individual helper scripts when they are run by hand for testing.
+
+Credentials arrive in environment variables (never on the command line, so they
+are not visible in `ps`). The worker sets them from the plugin's first message,
+so they never appear in any process environment:
 
   WYZE_EMAIL, WYZE_PASSWORD, WYZE_KEY_ID, WYZE_API_KEY   required for a full login
   WYZE_TOTP_KEY                                           optional authenticator-app seed (2FA)
@@ -34,6 +38,19 @@ class AuthError(Exception):
     """Login failed in a way the user has to fix (bad credentials, SMS 2FA, ...)."""
 
 
+class HelperError(Exception):
+    """A command failed; raised instead of exiting when running inside wyze_worker.py."""
+
+
+_in_worker = False
+
+
+def worker_mode():
+    """Report failures as HelperError instead of exiting (see fail)."""
+    global _in_worker
+    _in_worker = True
+
+
 def _no_prompt(*_args, **_kwargs):
     # wyze-sdk falls back to input() for SMS 2FA, or for authenticator 2FA without
     # a seed. A background plugin can never answer, so fail fast with a clear message.
@@ -57,9 +74,16 @@ _used_cached_mac = False
 
 
 def fail(message, code=1):
-    """Print to stderr (the plugin treats any stderr output as an error) and exit."""
+    """Report a failure: inside the worker raise HelperError, otherwise print to stderr and exit."""
+    if _in_worker:
+        raise HelperError(message)
     print(message, file=sys.stderr)
     sys.exit(code)
+
+
+def cli(main):
+    """Entry point for running a helper script by hand: main(command-line arguments)."""
+    main(sys.argv[1:])
 
 
 # ----------------------------------------------------------------- token file
@@ -226,6 +250,7 @@ def run(body):
     command has been sent, so re-running the body is safe.
     """
     global _used_cached_mac
+    _used_cached_mac = False
     try:
         client = get_client()
         try:
@@ -242,6 +267,8 @@ def run(body):
                 _used_cached_mac = False
                 return body(client)
             raise
+    except HelperError:
+        raise  # the command's own failure message, already worded for the log
     except AuthError as e:
         fail(str(e))
     except WyzeApiError as e:

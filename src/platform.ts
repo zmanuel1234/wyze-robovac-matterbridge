@@ -24,11 +24,11 @@ import { MatterbridgeEndpoint, MatterbridgeDynamicPlatform, PlatformConfig } fro
 import { RoboticVacuumCleaner } from 'matterbridge/devices';
 import { AnsiLogger, debugStringify } from 'matterbridge/logger';
 import { RvcRunMode, PowerSource, ServiceArea, RvcOperationalState, RvcCleanMode } from 'matterbridge/matter/clusters';
-import { execFile, ExecFileException } from 'child_process';
 import { homedir } from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { setTimeout } from 'timers/promises';
+import { PyWorker, PyResult } from './pyWorker.js';
 
 
 export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatform {
@@ -68,6 +68,7 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
   private oldRefreshInterval : number = 0;
 
   private roboticVacuum: MatterbridgeEndpoint | undefined;
+  private readonly worker : PyWorker;   // the long-running Python helper that talks to Wyze
 
   // The type Matterbridge passes in was renamed across 3.x releases; take it from the base class.
   constructor(matterbridge: ConstructorParameters<typeof MatterbridgeDynamicPlatform>[0], log: AnsiLogger, config: PlatformConfig) {
@@ -99,6 +100,21 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
     if (config.mfaCode !== undefined) {
       delete config.mfaCode;
     }
+    this.worker = new PyWorker({
+      python: String(this.config.pythonPath || 'python3'),
+      script: path.join(this.helperDir(), 'wyze_worker.py'),
+      secrets: () => ({
+        WYZE_EMAIL: String(this.config.username ?? ''),
+        WYZE_PASSWORD: String(this.config.password ?? ''),
+        WYZE_KEY_ID: String(this.config.key_id ?? ''),
+        WYZE_API_KEY: String(this.config.api_key ?? ''),
+        WYZE_TOTP_KEY: String(this.config.totpKey ?? ''),
+        WYZE_TOKEN_FILE: this.tokenFile(),
+      }),
+      timeoutMs: 90_000,
+      log: (m) => this.log.info(m),
+    });
+
     const missing = ['username', 'password', 'key_id', 'api_key'].filter((k) => !String(config[k] ?? '').trim());
     if (missing.length > 0) {
       this.log.error(`Missing required setting(s): ${missing.join(', ')}. ` +
@@ -274,6 +290,7 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
   override async onShutdown(reason?: string) {
     this.stopping = true;        // ends the status loop
     this.pokeStatusLoop = true;
+    this.worker.stop();
     await super.onShutdown(reason);
     const out : string = reason ? reason : 'none';
     this.myLogger(`onShutdown - RoboVac called with reason = '${out}'`);
@@ -295,9 +312,9 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
 
   // ========================= Wyze API interface ==============================================
   //
-  // Each method runs one Python helper and waits for it to finish. Helpers print their
-  // result on stdout and problems on stderr (exiting non-zero), and never take longer
-  // than runPy's 90-second timeout.
+  // Each method sends one command to the Python helper (see pyWorker.ts) and waits for
+  // the answer: the command's output, or why it failed. No command waits longer than
+  // 90 seconds.
 
   /***************** SetFloor **********************/
 
@@ -495,42 +512,9 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
 
   // =========================== Utilities ===================================
 
-  /*
-   * Run one of the Python helper scripts.
-   *
-   * The interpreter is started directly with an argument list (no shell), so
-   * vacuum, floor and room names are passed as-is and cannot be misread as
-   * shell syntax. Wyze credentials go only into the child's environment,
-   * which, unlike the command line, other users on the machine cannot read.
-   * Neither the arguments nor the environment are ever logged.
-   */
-  runPy(script : string, args : string[],
-    callback : (error : ExecFileException | null, stdout : string, stderr : string) => void) {
-    const env : NodeJS.ProcessEnv = {
-      ...process.env,
-      WYZE_EMAIL: String(this.config.username ?? ''),
-      WYZE_PASSWORD: String(this.config.password ?? ''),
-      WYZE_KEY_ID: String(this.config.key_id ?? ''),
-      WYZE_API_KEY: String(this.config.api_key ?? ''),
-      WYZE_TOTP_KEY: String(this.config.totpKey ?? ''),
-      WYZE_TOKEN_FILE: this.tokenFile(),
-      PYTHONWARNINGS: 'ignore',   // a library warning on stderr would otherwise be treated as a failure
-      PYTHONDONTWRITEBYTECODE: '1',
-    };
-    const python = String(this.config.pythonPath || 'python3');
-    const scriptPath = path.join(this.helperDir(), script);
-    execFile(python, [scriptPath, ...args], { env, timeout: 90_000, maxBuffer: 1024 * 1024 },
-      (error, stdout, stderr) => callback(error, String(stdout), String(stderr)));
-  }
-
-  // runPy as a promise. ok = exit code 0 and nothing on stderr.
-  py(script : string, args : string[]) : Promise<{ ok : boolean, stdout : string, stderr : string }> {
-    return new Promise((resolve) => {
-      this.runPy(script, args, (error, stdout, stderr) => {
-        const err = stderr.trim() || (error ? error.message : '');
-        resolve({ ok: !error && !stderr.trim(), stdout, stderr: err });
-      });
-    });
+  // Run one helper command, e.g. py('getVacuumStatus.py', [nickname]). ok = it succeeded.
+  py(script : string, args : string[]) : Promise<PyResult> {
+    return this.worker.request(script.replace(/\.py$/, ''), args);
   }
 
   helperDir() : string {
