@@ -80,6 +80,12 @@ Housekeeping only; the plugin behaves exactly as 1.0.1-secure.3.
 - The package ships only what the plugin needs (`files` in package.json): compiled code, Python helpers, settings schema, sample config, README, CHANGELOG, LICENSE. No source maps, type declarations or author tooling.
 - Removed the original author's publish script, CODEOWNERS, devcontainer, legacy .eslintrc, unused tsconfig.production.json and donation image.
 
+## [1.0.7] - 2026-11-01
+
+### Fixed
+
+- Matterbridge refused to load 1.0.5 and 1.0.6 ("Found matterbridge package in the plugin devDependencies ... The plugin is disabled"): `matterbridge` was listed as a development dependency, which Matterbridge does not allow in any dependency list. It is now installed for development with `npm run dev:matterbridge` (not saved in package.json), and packing checks that no Matterbridge package is listed.
+
 ## [1.0.6] - 2026-11-01
 
 Bug fixes and cleanup (unofficial patched version).

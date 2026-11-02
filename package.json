@@ -1,6 +1,6 @@
 {
   "name": "matterbridge-wyze-robovac",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "Wyze RoboVac",
   "author": "https://github.com/RMCob",
   "license": "Apache-2.0",
@@ -41,15 +41,16 @@
     "node": ">=22.0.0 <23.0.0 || >=24.0.0 <25.0.0"
   },
   "scripts": {
+    "dev:matterbridge": "npm install --no-save matterbridge@^3.11.1",
+    "check:deps": "node -e \"const p=require('./package.json');const bad=['dependencies','devDependencies','peerDependencies','optionalDependencies'].flatMap((t)=>Object.keys(p[t]||{})).filter((n)=>/^(matterbridge|@matterbridge|@matter|@project-chip)/.test(n));if(bad.length){console.error('Matterbridge refuses plugins that list: '+bad.join(', ')+'. Use npm run dev:matterbridge instead.');process.exit(1)}\"",
     "lint": "eslint src --max-warnings=0",
     "build": "node -e \"for (const p of ['dist','tsconfig.tsbuildinfo']) require('fs').rmSync(p, { recursive: true, force: true })\" && tsc",
-    "prepack": "npm run lint && npm run build"
+    "prepack": "npm run check:deps && npm run lint && npm run build"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/node": "^22.20.5",
     "eslint": "^10.0.0",
-    "matterbridge": "^3.11.1",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.72.1"
   }
