@@ -1,6 +1,6 @@
 {
   "name": "matterbridge-wyze-robovac",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "description": "Wyze RoboVac",
   "author": "https://github.com/RMCob",
   "license": "Apache-2.0",
@@ -23,10 +23,6 @@
   },
   "bugs": {
     "url": "https://github.com/RMCob/matterbridge-wyze-robovac/issues"
-  },
-  "funding": {
-    "type": "buymeacoffee",
-    "url": "https://www.buymeacoffee.com/rmcobgithub "
   },
   "keywords": [
     "matterbridge",

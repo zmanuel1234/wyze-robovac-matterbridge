@@ -80,6 +80,12 @@ Housekeeping only; the plugin behaves exactly as 1.0.1-secure.3.
 - The package ships only what the plugin needs (`files` in package.json): compiled code, Python helpers, settings schema, sample config, README, CHANGELOG, LICENSE. No source maps, type declarations or author tooling.
 - Removed the original author's publish script, CODEOWNERS, devcontainer, legacy .eslintrc, unused tsconfig.production.json and donation image.
 
+## [1.0.8] - 2026-11-01
+
+### Changed
+
+- Removed the donation link from package.json (the heart icon in the Matterbridge plugin list and npm's "looking for funding" message) and the donation badge from the README. The README credits the original plugin instead.
+
 ## [1.0.7] - 2026-11-01
 
 ### Fixed

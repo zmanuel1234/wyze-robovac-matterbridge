@@ -3,17 +3,16 @@
 [![npm](https://img.shields.io/npm/v/matterbridge-wyze-robovac)](https://www.npmjs.com/package/matterbridge-wyze-robovac/v/latest)
 [![npm](https://img.shields.io/npm/dt/matterbridge-wyze-robovac)](https://www.npmjs.com/package/matterbridge-wyze-robovac)
 [![GitHub last commit](https://img.shields.io/github/last-commit/RMCob/matterbridge-wyze-robovac)](https://github.com/RMCob/matterbridge-wyze-robovac)
-[![Donate](https://img.shields.io/badge/Donate-PayPal-blue)](https://www.paypal.com/donate/?business=G63Z63BWAJWZN&no_recurring=0&currency_code=USD)
 
 ---
 
 Matterbridge plugin to control and report status of the Wyze S200 Robot Vacuum
 
-> **1.0.7** is an unofficial, patched version of the original 1.0.1: secure credential handling, token caching, authenticator-app 2FA, Matterbridge 3.11 support, full vacuum state and fault reporting, and suction modes. See `CHANGELOG.md`. Don't install updates offered in the Matterbridge UI: they would replace it with the original plugin.
+> **1.0.8** is an unofficial, patched version of the original 1.0.1: secure credential handling, token caching, authenticator-app 2FA, Matterbridge 3.11 support, full vacuum state and fault reporting, and suction modes. See `CHANGELOG.md`. Don't install updates offered in the Matterbridge UI: they would replace it with the original plugin.
 
 A Robot Vacuum Cleaner device (supported by SmartThings, Alexa, Home Assistant and partially by Apple Home). Read also https://github.com/Luligu/matterbridge/discussions/264. 
 
-If you like this project and find it useful, please consider giving it a star on GitHub at https://github.com/rmcob/matterbridge-wyze-robovac and sponsoring it.
+Based on the original plugin by Rob Coben: https://github.com/RMCob/matterbridge-wyze-robovac
 
 ## Requirements
 
