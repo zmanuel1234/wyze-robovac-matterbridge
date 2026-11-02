@@ -1,6 +1,7 @@
 {
   "name": "matterbridge-wyze-robovac",
-  "version": "1.0.13",
+  "version": "1.0.14",
+  "private": true,
   "description": "Wyze S200 Robot Vacuum (patched)",
   "author": "RMCob, patched by zmanuel1234",
   "license": "Apache-2.0",

@@ -80,6 +80,12 @@ Housekeeping only; the plugin behaves exactly as 1.0.1-secure.3.
 - The package ships only what the plugin needs (`files` in package.json): compiled code, Python helpers, settings schema, sample config, README, CHANGELOG, LICENSE. No source maps, type declarations or author tooling.
 - Removed the original author's publish script, CODEOWNERS, devcontainer, legacy .eslintrc, unused tsconfig.production.json and donation image.
 
+## [1.0.14] - 2026-11-01
+
+### Changed
+
+- Marked the package `"private": true`. Matterbridge then no longer checks npm for updates to this plugin, so its page stops offering "Update the plugin to the latest version v.1.0.0", which would have replaced this version with the original 1.0.0 from npm (which does not start on Matterbridge 3.11). It also prevents publishing this package to npm by accident. Updates come from this repository's GitHub releases (`sudo wyze-plugin-update`).
+
 ## [1.0.13] - 2026-11-01
 
 ### Changed

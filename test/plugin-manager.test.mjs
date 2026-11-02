@@ -25,6 +25,10 @@ test('the package has the right files and nothing else', () => {
   assert.deepEqual(files.filter((f) => /^(test|src|node_modules)\/|\.ts$|tsbuildinfo|__pycache__|\.pyc$/.test(f)), [], 'no sources, tests or build leftovers');
 });
 
+test('marked private: Matterbridge offers no npm "update" (npm has only the original 1.0.0)', () => {
+  assert.equal(JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).private, true);
+});
+
 test('Matterbridge\'s plugin manager accepts and adds the packed plugin', () => {
   const tgz = path.join(tmp, fs.readdirSync(tmp).find((f) => f.endsWith('.tgz')));
   const prefix = path.join(tmp, 'prefix');
