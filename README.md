@@ -9,7 +9,7 @@
 
 Matterbridge plugin to control and report status of the Wyze S200 Robot Vacuum
 
-> **1.0.1-secure.1** is an unofficial patch of 1.0.1 that changes how Wyze credentials are handled and adds token caching and authenticator-app 2FA support. See `CHANGELOG.md`.
+> **1.0.5** is an unofficial, patched version of the original 1.0.1: secure credential handling, token caching, authenticator-app 2FA, Matterbridge 3.11 support, full vacuum state and fault reporting, and suction modes. See `CHANGELOG.md`. Don't install updates offered in the Matterbridge UI: they would replace it with the original plugin.
 
 A Robot Vacuum Cleaner device (supported by SmartThings, Alexa, Home Assistant and partially by Apple Home). Read also https://github.com/Luligu/matterbridge/discussions/264. 
 
@@ -84,7 +84,7 @@ Use the settings UI in Matterbridge browser interface to configure your Wyze acc
 - **`idleStatusCheck1RefreshInterval`** – Seconds between status checks when docked with a full battery. Defaults to 300 (5 min, the minimum). This is also how quickly a run started outside Home shows up.
 - **`idleStatusCheck2RefreshInterval`** – Seconds between status checks when docked and charging. Defaults to 60 (1 min, the minimum).
 
-### How credentials are handled (1.0.1-secure.1)
+### How credentials are handled
 
 The plugin never passes credentials on a command line and never logs them. Each helper receives them in its environment, logs in at most once, and then reuses a cached access token, refreshing it when it expires. If a login fails, it waits 15 minutes (or until the settings change) before trying again. See `CHANGELOG.md` for details.
 

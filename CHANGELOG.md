@@ -80,7 +80,9 @@ Housekeeping only; the plugin behaves exactly as 1.0.1-secure.3.
 - The package ships only what the plugin needs (`files` in package.json): compiled code, Python helpers, settings schema, sample config, README, CHANGELOG, LICENSE. No source maps, type declarations or author tooling.
 - Removed the original author's publish script, CODEOWNERS, devcontainer, legacy .eslintrc, unused tsconfig.production.json and donation image.
 
-## [1.0.1-secure.5] - 2026-11-01
+## [1.0.5] - 2026-11-01
+
+From here on this patched line uses plain version numbers (1.0.5, 1.0.6, ...). The earlier builds were named 1.0.1-secure.1 to 1.0.1-secure.4; 1.0.5 is the same code as the build first named 1.0.1-secure.5.
 
 ### ** Added **
 
