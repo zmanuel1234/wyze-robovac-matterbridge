@@ -39,6 +39,13 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
 
   // Matter clean-mode number -> Wyze suction level understood by vacuumSetSuction.py
   static readonly SUCTION_BY_MODE : Record<number, string> = { 1: 'standard', 3: 'quiet', 4: 'strong' };
+  // ... and back: Wyze suction level reported by getVacuumStatus.py -> Matter clean mode
+  static readonly MODE_BY_SUCTION : Record<string, number> = { standard: 1, quiet: 3, strong: 4 };
+
+  // Battery percentages at or below which Home is told the battery is low / critically low
+  // (Home shows a low-battery warning). Not while the vacuum is charging on its dock.
+  static readonly BATTERY_WARNING = 20;
+  static readonly BATTERY_CRITICAL = 10;
 
   // Oldest Matterbridge this version has been tested with.
   static readonly MIN_MATTERBRIDGE = '3.11.0';
@@ -49,6 +56,7 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
   private oldStatus : string = '';
   private lastAppliedState : string = '';   // run mode + operational state last shown in the Home app
   private commandGraceUntil : number = 0;   // until then, polls don't overwrite a state set by a Home command
+  private suctionGraceUntil : number = 0;   // the same for a suction level just chosen in Home
   private batteryLevel : number = 0;
   private rooms: string[] = [];
   private supportedMaps : { mapId: number; name: string; }[] = [];
@@ -258,8 +266,14 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
       }
       this.log.info(`Setting suction level to ${level}`);
       const r = await this.py('vacuumSetSuction.py', [this.nickname, level]);
-      if( !r.ok ) {
+      if( r.ok ) {
+        // Wyze may still report the old level for a few seconds: don't flip Home back.
+        this.suctionGraceUntil = Date.now() + RoboVacMatterbridgeDynamicPlatform.COMMAND_GRACE_MS;
+      } else {
+        // Matterbridge shows the requested mode once this returns: put the real one back.
         this.log.info(`Could not set suction level: ${r.stderr}`);
+        this.suctionGraceUntil = 0;
+        this.pokeStatusLoop = true;
       }
     });
 
@@ -411,19 +425,21 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
       this.log.info(`Status check failed: ${r.stderr}`);
       return this.statusRefreshInterval || Number(this.config.busyStatusCheckRefreshInterval);
     }
-    // "mode:battery:is_charging:fault", e.g. "VacuumMode.IDLE:87:True:None"
+    // "mode:battery:is_charging:fault:suction", e.g. "VacuumMode.IDLE:87:True:None:quiet"
     const fields = r.stdout.trim().split(':');
     const battery = Number(fields[1]);
     const batteryKnown = fields[1] !== undefined && fields[1] !== '' && Number.isInteger(battery) && battery >= 0 && battery <= 100;
     this.currentStatus = fields[0];
     this.isDocked = (fields[2] ?? '').toLowerCase() === 'true';
     this.fault = fields[3] ?? 'None';
+    const suction = (fields[4] ?? '').toLowerCase();
     if( batteryKnown ) {
       this.batteryLevel = battery;
     } else {
       this.log.info(`Wyze reported no usable battery level ('${fields[1] ?? ''}'); keeping ${this.batteryLevel}%`);
     }
-    this.myLogger(`Status: ${this.currentStatus}, battery ${this.batteryLevel}%, charging ${this.isDocked}, fault ${this.fault}`);
+    this.myLogger(`Status: ${this.currentStatus}, battery ${this.batteryLevel}%, charging ${this.isDocked}, ` +
+      `fault ${this.fault}, suction ${suction || 'unknown'}`);
 
     if( this.roboticVacuum !== undefined && batteryKnown ) {
       await this.roboticVacuum.updateAttribute(PowerSource.Cluster.id, 'batPercentRemaining', this.batteryLevel * 2, this.log);
@@ -434,6 +450,13 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
         chargeState = PowerSource.BatChargeState.IsCharging;
       }
       await this.roboticVacuum.updateAttribute(PowerSource.Cluster.id, 'batChargeState', chargeState, this.log);
+      await this.roboticVacuum.updateAttribute(PowerSource.Cluster.id, 'batChargeLevel', this.batteryChargeLevel(), this.log);
+    }
+
+    // Suction level, also when it was changed in the Wyze app.
+    const cleanMode = RoboVacMatterbridgeDynamicPlatform.MODE_BY_SUCTION[suction];
+    if( this.roboticVacuum !== undefined && cleanMode !== undefined && Date.now() >= this.suctionGraceUntil ) {
+      await this.roboticVacuum.updateAttribute(RvcCleanMode.Cluster.id, 'currentMode', cleanMode, this.log);
     }
 
     /*
@@ -599,6 +622,19 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
     };
     const hit = table[name];
     return hit ? { id: hit[0], details: hit[1] } : { id: E.UnableToCompleteOperation, details: `Wyze fault ${name}`.slice(0, 64) };
+  }
+
+  // OK / low / critically low, as Home shows it. Charging on the dock always counts as OK,
+  // so Home doesn't warn about a vacuum that is already recharging.
+  batteryChargeLevel() : number {
+    const L = PowerSource.BatChargeLevel;
+    if( this.isDocked ) {
+      return L.Ok;
+    }
+    if( this.batteryLevel <= RoboVacMatterbridgeDynamicPlatform.BATTERY_CRITICAL ) {
+      return L.Critical;
+    }
+    return this.batteryLevel <= RoboVacMatterbridgeDynamicPlatform.BATTERY_WARNING ? L.Warning : L.Ok;
   }
 
   stateKey(runMode : number, opState : number) : string {

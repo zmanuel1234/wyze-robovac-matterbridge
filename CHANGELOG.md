@@ -80,6 +80,14 @@ Housekeeping only; the plugin behaves exactly as 1.0.1-secure.3.
 - The package ships only what the plugin needs (`files` in package.json): compiled code, Python helpers, settings schema, sample config, README, CHANGELOG, LICENSE. No source maps, type declarations or author tooling.
 - Removed the original author's publish script, CODEOWNERS, devcontainer, legacy .eslintrc, unused tsconfig.production.json and donation image.
 
+## [1.0.10] - 2026-11-01
+
+### Added
+
+- Low-battery warnings in the Home app: the battery is reported as low at 20 % or less and critically low at 10 % or less, while the vacuum is off its dock. Charging on the dock always counts as OK.
+- The suction level shown in Home (Standard, Quiet, Strong) now follows the vacuum, so a change made in the Wyze app shows up at the next status check. A level just chosen in Home is kept for 40 seconds while Wyze catches up; if Wyze refuses it, Home goes back to the real level straight away.
+- getVacuumStatus.py prints the suction level as a fifth field (quiet, standard, strong or None).
+
 ## [1.0.9] - 2026-11-01
 
 ### Changed

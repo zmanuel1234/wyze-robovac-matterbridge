@@ -8,7 +8,7 @@
 
 Matterbridge plugin to control and report status of the Wyze S200 Robot Vacuum
 
-> **1.0.9** is an unofficial, patched version of the original 1.0.1: secure credential handling, token caching, authenticator-app 2FA, Matterbridge 3.11 support, full vacuum state and fault reporting, and suction modes. See `CHANGELOG.md`. Don't install updates offered in the Matterbridge UI: they would replace it with the original plugin.
+> **1.0.10** is an unofficial, patched version of the original 1.0.1: secure credential handling, token caching, authenticator-app 2FA, Matterbridge 3.11 support, full vacuum state and fault reporting, and suction modes. See `CHANGELOG.md`. Don't install updates offered in the Matterbridge UI: they would replace it with the original plugin.
 
 A Robot Vacuum Cleaner device (supported by SmartThings, Alexa, Home Assistant and partially by Apple Home). Read also https://github.com/Luligu/matterbridge/discussions/264. 
 
@@ -27,8 +27,8 @@ Based on the original plugin by Rob Coben: https://github.com/RMCob/matterbridge
 - Exposes the S200 as a Matter robot vacuum with the rooms and floors from the Wyze app, so Home can clean selected rooms, pause, resume and send it to the dock.
 - Shows the vacuum's real state, including runs started from the Wyze app, a schedule or the button: cleaning, paused, returning to the dock, charging (also "charging, will resume") and docked.
 - Shows Wyze faults as Matter errors while the vacuum is away from the dock: stuck, wheels jammed, lidar blocked, dust bin / water tank / mop missing, failed to find the dock, and so on.
-- Offers three cleaning modes mapped to the suction levels: Standard, Quiet and Strong (set while the vacuum is docked).
-- Reports the battery level and whether it is charging.
+- Offers three cleaning modes mapped to the suction levels: Standard, Quiet and Strong (set while the vacuum is docked). A level changed in the Wyze app shows up in Home at the next status check.
+- Reports the battery level and whether it is charging, and tells Home the battery is low at 20 % or less (critically low at 10 %) while the vacuum is away from its dock.
 
 ## Caveats
 

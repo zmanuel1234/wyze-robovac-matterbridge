@@ -1,5 +1,15 @@
-# Prints "mode:battery_percent:is_charging:fault_name" for the vacuum (fault_name is None when there is no fault).
+# Prints "mode:battery_percent:is_charging:fault_name:suction" for the vacuum, e.g.
+# "VacuumMode.IDLE:87:True:None:quiet" (fault_name / suction are None when not reported).
 from wyze_auth import run, fail, cli, find_vacuum_mac
+
+
+def _suction(vacuum):
+    """'quiet', 'standard' or 'strong'; None if Wyze didn't report it (or reported a code wyze-sdk can't read)."""
+    try:
+        level = vacuum.clean_level
+    except (AttributeError, ValueError):
+        return None
+    return level.name.lower() if level is not None else None
 
 
 def main(args):
@@ -12,7 +22,7 @@ def main(args):
         vacuum = client.vacuums.info(device_mac=device_mac)
         # fault_code is a VacuumFaultCode (or None); print just its name, e.g. COLLISION_EXCEPTION
         fault = getattr(vacuum.fault_code, "name", None) or "None"
-        print(f"{vacuum.mode}:{vacuum.voltage}:{vacuum.is_charging}:{fault}")
+        print(f"{vacuum.mode}:{vacuum.voltage}:{vacuum.is_charging}:{fault}:{_suction(vacuum)}")
 
     run(body)
 
