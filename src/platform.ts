@@ -23,16 +23,13 @@
 
 import { MatterbridgeEndpoint, MatterbridgeDynamicPlatform, PlatformConfig } from 'matterbridge';
 import { RoboticVacuumCleaner } from 'matterbridge/devices';
-// import { isValidBoolean, isValidNumber } from 'matterbridge/utils';
 import { AnsiLogger, debugStringify } from 'matterbridge/logger';
-// import { BooleanState, OnOff, LevelControl, } from 'matterbridge/matter/clusters';
 import { RvcRunMode, PowerSource, ServiceArea, RvcOperationalState, RvcCleanMode } from 'matterbridge/matter/clusters';
 import { execFile, ExecFileException } from 'child_process';
 import { homedir } from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { setTimeout } from 'timers/promises';
-// import { BasicInformationServer, BridgedDeviceBasicInformationServer } from 'matterbridge/matter/behaviors';
 
 
 export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatform {
@@ -44,15 +41,6 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
 
   static readonly SUCTION_BY_MODE : Record<number, string> = { 1: 'standard', 3: 'quiet', 4: 'strong' };
 
-  private discoverDevicesFinished = false;
-  private getCurrentStatusFinished = false;
-  private getRoomsFinished = false;
-  private startSweepFinished = false;
-  private startCleanFinished = false;
-  private stopSweepFinished = false;
-  private pauseSweepFinished = false;
-  private continueSweepFinished = false;
-  private setFloorFinished = false;
 
   private nickname : string = 'RoboVac';
   private macAddr : string = '';
@@ -60,9 +48,7 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
   private oldStatus : string = '';
   private lastAppliedState : string = '';   // run mode + operational state last shown in the Home app
   private commandGraceUntil : number = 0;   // until then, polls don't overwrite a state set by a Home command
-  private currentFloorName : string = '';
   private batteryLevel : number = 0;
-  private batteryWasCharging : boolean = false;
   private rooms: string[] = [];
   private supportedMaps : { mapId: number; name: string; }[] = [];
   private supportedAreas: { areaId: number, mapId: number,
@@ -72,7 +58,7 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
   private selectedAreas : number[] = [];
   private currentMapId : number = -1;
   private isDocked = true;
-  private errorCode : string = 'None';
+  private fault : string = 'None';   // Wyze fault name from the last status check, e.g. 'COLLISION_EXCEPTION'
   private newRoomsSelected : boolean = false;
 
   private pokeStatusLoop : boolean = false;
@@ -184,8 +170,6 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
       ], // supportedMaps
     );
 
-    //   createDefaultBridgedDeviceBasicInformationClusterServer(this.nickname, this.macAddr, 0xfff1, 'Wyze', 'MyToy');
-
     if (this.config.enableServerRvc === true) {
       this.log.notice('RVC is in server mode 66');
     }
@@ -243,21 +227,14 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
         return;
       }
       this.log.info(`Setting suction level to ${level}`);
-      this.runPy('vacuumSetSuction.py', [this.nickname, level], (error, _stdout, stderr) => {
-        if( error || stderr ) {
-          this.log.info(`Could not set suction level: ${(stderr || error?.message || '').trim()}`);
-        }
-      });
+      const r = await this.py('vacuumSetSuction.py', [this.nickname, level]);
+      if( !r.ok ) {
+        this.log.info(`Could not set suction level: ${r.stderr}`);
+      }
     });
 
     this.myLogger('before addDevice');
     this.roboticVacuum = await this.addDevice(this.roboticVacuum);
-    /*
-    if( this.roboticVacuum ) {
-      this.roboticVacuum.createDefaultBasicInformationClusterServer(this.nickname,
-        this.macAddr, 0xfff1, 'Wyze', 0x8000, 'Robot Vacuum Cleaner');
-    }
-*/
 
     this.setupSupportedAreas();   // rooms & floors as defined in the Wyze app.
     this.myLogger('after setupSupportedAreas');
@@ -275,9 +252,6 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
   override async onConfigure() {
     await super.onConfigure();
     this.myLogger('onConfigure called - RoboVac');
-    if( this.roboticVacuum ) {
-      await this.roboticVacuum.setAttribute('BridgedDeviceBasicInformation', 'vendorName', 'RobsToy', this.log);
-    }
     await this.getStatus();
   }
 
@@ -302,482 +276,173 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
     }
   }
 
-  // ========================= Wyze API interface `=============================================
+  // ========================= Wyze API interface ==============================================
+  //
+  // Each method runs one Python helper and waits for it to finish. Helpers print their
+  // result on stdout and problems on stderr (exiting non-zero), and never take longer
+  // than runPy's 90-second timeout.
 
   /***************** SetFloor **********************/
 
   async setFloor() {
-    /*
-     * Find the floor name
-     */
-    if( this.selectedAreas.length === 0 ) {
-      this.currentMapId = 1;
-    } else {               // All selected rooms will be on the same floor so use the first one.
-      for (let j = 0; j < this.supportedAreas.length; j++) {
-        if( this.selectedAreas[0] === this.supportedAreas[j].areaId ) {
-          this.currentMapId = this.supportedAreas[j].mapId;
-        }
-      }
+    // All selected rooms are on the same floor, so the first one decides.
+    let mapId = 1;
+    const firstArea = this.supportedAreas.find((a) => a.areaId === this.selectedAreas[0]);
+    if( this.selectedAreas.length > 0 && firstArea ) {
+      mapId = firstArea.mapId;
     }
-    for (let i = 0; i < this.supportedMaps.length; i++) {
-      if( this.currentMapId === this.supportedMaps[i].mapId) {
-        this.currentFloorName = this.supportedMaps[i].name;
-        this.myLogger(` in setFloor(): this.currentFloorName = '${this.currentFloorName}'`);
-      }
+    this.currentMapId = mapId;
+    const floorName = this.supportedMaps.find((m) => m.mapId === mapId)?.name ?? '';
+    const r = await this.py('setVacuumFloor.py', [this.nickname, floorName]);
+    if( r.ok ) {
+      this.myLogger(`Current map set to floor '${floorName}'`);
+    } else {
+      this.log.info(`Could not set the floor to '${floorName}': ${r.stderr}`);
     }
-    /*
-     * Change map in the Wyze app to the current floor
-     */
-    let cntr = 0;
-    this.setFloorFinished = false;
-    await this.setCurrentFloor( this.currentFloorName );
-    this.myLogger('waiting for setCurrentFloor() to finish');
-    while( ! this.setFloorFinished ) {
-      if( cntr++ > 10 ) {  // Wait up to 10 seconds for getCurrentStatus() to finish
-        break;
-      }
-      await setTimeout(1000);  // Delay 1 second
-      this.myLogger(`SCF cntr = '${cntr}'`);
-    }
-    this.myLogger( 'at end of setCurrentFloor()' );
   }
 
-  async setCurrentFloor( floorName : string ) {
-    const floor = floorName;
-    this.runPy('setVacuumFloor.py', [this.nickname, floor],
-      (error, stdout, stderr) => {
-        if (error) {
-          this.log.info(`error: ${error.message}`);
-        }
-        if (stderr) {
-          this.log.info(`stderr: ${stderr}`);
-        }
+  /***************** Resume, pause, dock, start **********************/
 
-        if (error || stderr) {
-          this.setFloorFinished = true;
-          return;
-        }
-        this.myLogger(`Current map set to floor '${floor}'`);
-      },
-    );
-    this.setFloorFinished = true;
-    return;
+  // Resume after a pause.
+  async startCleaning() {
+    const r = await this.py('vacuumStartClean.py', [this.nickname]);
+    await this.afterCommand('Resume', r);
   }
-
-  /***************** Clean **********************/
-
-  async startCleaning() {          // This should only be called when resuming after a 'Pause'
-    let cntr = 0;
-    this.startCleanFinished = false;
-    await this.vacuumStartClean( this.nickname );
-    this.myLogger('waiting for vacuumStartClean() to finish');
-    while( ! this.startCleanFinished ) {
-      if( cntr++ > 10 ) {  // Wait up to 10 seconds for vacuumStartClean() to finish
-        break;
-      }
-      await setTimeout(1000);  // Delay 1 second
-      this.myLogger(`SS cntr = '${cntr}'`);
-    }
-    this.myLogger( 'at end of pauseSweeping()' );
-  }
-
-  async vacuumStartClean(nickname : string) {
-    this.runPy('vacuumStartClean.py', [nickname],
-      (error, stdout, stderr) => {
-        if (error) {
-          this.log.info(`error: ${error.message}`);
-          this.startCleanFinished = true;
-          return;
-        }
-        if (stderr) {
-          this.myLogger(`stderr: ${stderr}`);
-          if( stderr.toLowerCase().includes('robovac is docked') ) {
-            if( this.roboticVacuum ) {
-              this.log.info('Wanted to Resume cleaning but device is currently docked. Update the UI');
-              this.roboticVacuum.setAttribute('RvcRunMode', 'currentMode', 1, this.log); // Idle
-              this.roboticVacuum.setAttribute('RvcOperationalState', 'operationalState',
-                RvcOperationalState.OperationalState.Docked, this.log);
-              this.roboticVacuum.setAttribute('RvcOperationalState', 'operationalError',
-                { errorStateId: RvcOperationalState.ErrorState.NoError }, this.log);
-            }
-          }
-          this.startCleanFinished = true;
-          return;
-        }
-
-        this.startCleanFinished = true;
-        return;
-      });
-  }
-
-  /***************** Pause **********************/
 
   async pauseSweeping() {
-    let cntr = 0;
-    this.pauseSweepFinished = false;
-    await this.vacuumPauseSweeping( this.nickname );
-    this.myLogger('waiting for vacuumPauseSweeping() to finish');
-    while( ! this.pauseSweepFinished ) {
-      if( cntr++ > 10 ) {  // Wait up to 10 seconds for vacuumPauseSweeping() to finish
-        break;
-      }
-      await setTimeout(1000);  // Delay 1 second
-      this.myLogger(`SS cntr = '${cntr}'`);
-    }
-    this.myLogger('at end of pauseSweeping()' );
+    const r = await this.py('vacuumPauseSweep.py', [this.nickname]);
+    await this.afterCommand('Pause', r);
   }
-
-  async vacuumPauseSweeping(nickname : string) {
-    this.runPy('vacuumPauseSweep.py', [nickname],
-      (error, stdout, stderr) => {
-        if (error) {
-          this.log.info(`error: ${error.message}`);
-          this.pauseSweepFinished = true;
-          return;
-        }
-        if (stderr) {
-          this.myLogger(`stderr: ${stderr}`);
-          if( stderr.toLowerCase().includes('robovac is docked') ) {
-            if( this.roboticVacuum ) {
-              this.log.info('Wanted to Pause but device is currently docked. Update the UI');
-              this.roboticVacuum.setAttribute('RvcRunMode', 'currentMode', 1, this.log); // Idle
-              this.roboticVacuum.setAttribute('RvcOperationalState', 'operationalState',
-                RvcOperationalState.OperationalState.Docked, this.log);
-              this.roboticVacuum.setAttribute('RvcOperationalState', 'operationalError',
-                { errorStateId: RvcOperationalState.ErrorState.NoError }, this.log);
-            }
-          }
-          this.pauseSweepFinished = true;
-          return;
-        }
-
-        this.pauseSweepFinished = true;
-        return;
-      });
-  }
-
-  /***************** StopSweep **********************/
 
   async stopSweeping() {
-    let cntr = 0;
-    this.stopSweepFinished = false;
-    await this.vacuumStopSweeping( this.nickname );
-    this.myLogger('waiting for vacuumStopSweeping() to finish');
-    while( ! this.stopSweepFinished ) {
-      if( cntr++ > 10 ) {  // Wait up to 10 seconds for vacuumStopSweeping() to finish
-        break;
-      }
-      await setTimeout(1000);  // Delay 1 second
-      this.myLogger(`SS cntr = '${cntr}'`);
-    }
-    this.myLogger('at end of stopSweeping()' );
+    const r = await this.py('vacuumStopSweep.py', [this.nickname]);
+    await this.afterCommand('Return to dock', r);
   }
-
-  async vacuumStopSweeping(nickname : string) {
-    this.runPy('vacuumStopSweep.py', [nickname],
-      (error, stdout, stderr) => {
-        if (error) {
-          this.log.info(`error: ${error.message}`);
-          this.stopSweepFinished = true;
-          return;
-        }
-        if (stderr) {
-          this.myLogger(`stderr: ${stderr}`);
-          if( stderr.toLowerCase().includes('robovac is already docked') ) {
-            if( this.roboticVacuum ) {
-              this.log.info('Wanted to Stop sweeping but device is already docked. Update the UI');
-              this.roboticVacuum.setAttribute('RvcRunMode', 'currentMode', 1, this.log); // Idle
-              this.roboticVacuum.setAttribute('RvcOperationalState', 'operationalState',
-                RvcOperationalState.OperationalState.Docked, this.log);
-              this.roboticVacuum.setAttribute('RvcOperationalState', 'operationalError',
-                { errorStateId: RvcOperationalState.ErrorState.NoError }, this.log);
-            }
-          }
-
-          this.stopSweepFinished = true;
-          return;
-        }
-
-        this.stopSweepFinished = true;
-        return;
-      });
-  }
-
-  /***************** StartSweep **********************/
 
   async startSweeping() {
-    let cntr = 0;
-    this.startSweepFinished = false;
-    await this.vacuumStartSweeping( this.nickname, this.selectedAreas );
-    this.myLogger('waiting for vacuumStartSweeping() to finish');
-    while( ! this.startSweepFinished ) {
-      if( cntr++ > 10 ) {  // Wait up to 10 seconds for vacuumStartSweeping() to finish
-        break;
-      }
-      await setTimeout(1000);  // Delay 1 second
-      this.myLogger(`VSS cntr = '${cntr}'`);
-    }
-    this.myLogger( 'at end of startSweeping()' );
+    const roomNames : string[] = this.selectedAreas
+      .map((id) => this.supportedAreas.find((a) => a.areaId === id)?.areaInfo.locationInfo.locationName)
+      .filter((name) : name is string => name !== undefined);
+    this.log.info(`Rooms to be swept = '${roomNames.join(', ')}'`);
+    const r = await this.py('vacuumStartSweep.py', [this.nickname, ...roomNames]);
+    await this.afterCommand('Start cleaning', r);
   }
 
-  async vacuumStartSweeping(nickname : string, rooms2sweep : number[]) {
-    const roomNames : string[] = [];
-    if( rooms2sweep.length > 0 ) {
-      for (let i = 0; i < rooms2sweep.length; i++) {
-        const areaId = rooms2sweep[i];
-        this.myLogger(`before StartSweep, rooms2sweep[${i}] = '${areaId}'`);
-        for (let j = 0; j < this.supportedAreas.length; j++) {
-          const area = this.supportedAreas[j];
-          if( area.areaId === areaId ) {
-            const name : string = area.areaInfo.locationInfo.locationName;
-            roomNames.push( name );
-            this.myLogger(`roomNames = '${roomNames.join(', ')}'`);
-          }
-        }
-      }
-      this.log.info(`Rooms to be swept = '${roomNames.join(', ')}'`);
+  // A helper refused a command because the vacuum wasn't in the expected state (for
+  // example "already docked"): show the real state in the Home app right away.
+  async afterCommand(what : string, r : { ok : boolean, stdout : string, stderr : string }) {
+    if( r.ok ) {
+      this.myLogger(`${what}: ${r.stdout.trim()}`);
+      return;
     }
-    this.runPy('vacuumStartSweep.py', [nickname, ...roomNames],
-      (error, stdout, stderr) => {
-        if (error) {
-          this.log.info(`error: ${error.message}`);
-          this.startSweepFinished = true;
-          return;
-        }
-        if (stderr) {
-          this.log.info(`stderr: ${stderr}`);
-          this.startSweepFinished = true;
-          return;
-        }
-
-        this.myLogger(`in startSweeping(): rooms2sweep = '${rooms2sweep}'`);
-
-        this.startSweepFinished = true;
-        return;
-      });
+    this.log.info(`${what} not done: ${r.stderr}`);
+    if( /docked|already sweeping/i.test(r.stderr) ) {
+      this.commandGraceUntil = 0;
+      this.lastAppliedState = '';
+      await this.getStatus();
+    }
   }
 
   /***************** Status **********************/
-  async getStatus() {
-    let cntr = 0;
-    this.getCurrentStatusFinished = false;
-    await this.getCurrentStatus(this.nickname);
-    this.myLogger('waiting for getCurrentStatus() to finish');
-    while( ! this.getCurrentStatusFinished ) {
-      if( cntr++ > 10 ) {  // Wait up to 10 seconds for getCurrentStatus() to finish
-        break;
-      }
-      await setTimeout(1000);  // Delay 1 second
-      this.myLogger(`GCS cntr = '${cntr}'`);
+
+  // Polls the vacuum, updates the Home app, and returns the seconds until the next poll.
+  async getStatus() : Promise<number> {
+    const r = await this.py('getVacuumStatus.py', [this.nickname]);
+    if( !r.ok ) {
+      this.log.info(`Status check failed: ${r.stderr}`);
+      return this.statusRefreshInterval || Number(this.config.busyStatusCheckRefreshInterval);
     }
-    this.myLogger(`at end of getStatus(), this.currentStatus = '${this.currentStatus}'`);
+    // "mode:battery:is_charging:fault", e.g. "VacuumMode.IDLE:87:True:None"
+    const fields = r.stdout.trim().split(':');
+    this.currentStatus = fields[0];
+    this.batteryLevel = Number(fields[1]);
+    this.isDocked = (fields[2] ?? '').toLowerCase() === 'true';
+    this.fault = fields[3] ?? 'None';
+    this.myLogger(`Status: ${this.currentStatus}, battery ${this.batteryLevel}%, charging ${this.isDocked}, fault ${this.fault}`);
+
+    if( this.roboticVacuum !== undefined ) {
+      await this.roboticVacuum.updateAttribute(PowerSource.Cluster.id, 'batPercentRemaining', this.batteryLevel * 2, this.log);
+      let chargeState = PowerSource.BatChargeState.IsNotCharging;
+      if( this.batteryLevel === 100 ) {
+        chargeState = PowerSource.BatChargeState.IsAtFullCharge;
+      } else if( this.isDocked ) {
+        chargeState = PowerSource.BatChargeState.IsCharging;
+      }
+      await this.roboticVacuum.updateAttribute(PowerSource.Cluster.id, 'batChargeState', chargeState, this.log);
+    }
+
+    /*
+     * Show the vacuum's state in the Home app. Every Wyze mode is mapped (see
+     * matterStateFor), including runs started outside Home, and Charging vs Docked.
+     * A Wyze fault (stuck, dust bin missing, ...) is shown as an error unless the
+     * vacuum is back on the dock. The state is only written when it differs from what
+     * was last shown, so a command just sent from Home isn't undone by a poll that
+     * ran before the vacuum reacted.
+     */
+    const target = this.matterStateFor(this.currentStatus, this.batteryLevel, this.isDocked);
+    const fault = target && !target.onDock ? this.matterErrorFor(this.fault) : undefined;
+    if( target && this.roboticVacuum ) {
+      const opState = fault ? RvcOperationalState.OperationalState.Error : target.opState;
+      const key = this.stateKey(target.runMode, opState) + (fault ? `:${fault.id}` : '');
+      const inGrace = Date.now() < this.commandGraceUntil;
+      if( key !== this.lastAppliedState && !inGrace ) {
+        this.lastAppliedState = key;
+        await this.roboticVacuum.setAttribute('RvcRunMode', 'currentMode', target.runMode, this.log);
+        await this.roboticVacuum.setAttribute('RvcOperationalState', 'operationalState', opState, this.log);
+        await this.roboticVacuum.setAttribute('RvcOperationalState', 'operationalError', fault
+          ? { errorStateId: fault.id, errorStateDetails: fault.details }
+          : { errorStateId: RvcOperationalState.ErrorState.NoError }, this.log);
+        this.log.info(fault
+          ? `Vacuum reports a problem: ${fault.details} (${this.fault}, ${this.currentStatus})`
+          : `Vacuum is ${target.label} (${this.currentStatus}, battery ${this.batteryLevel}%)`);
+      }
+    } else if( this.currentStatus !== this.oldStatus ) {
+      this.log.info(`Unrecognised vacuum status '${this.currentStatus}'; Home app state left unchanged`);
+    }
+    this.oldStatus = this.currentStatus;
+
+    // Fast checks while cleaning, paused, returning, faulted or just after a Home
+    // command; slower while docked (charging, then full).
+    if( !target || target.busy || fault || Date.now() < this.commandGraceUntil ) {
+      this.statusRefreshInterval = Number(this.config.busyStatusCheckRefreshInterval);
+    } else if( this.batteryLevel < 100 ) {
+      this.statusRefreshInterval = Number(this.config.idleStatusCheck2RefreshInterval);
+    } else {
+      this.statusRefreshInterval = Number(this.config.idleStatusCheck1RefreshInterval);
+    }
+    if( this.statusRefreshInterval !== this.oldRefreshInterval ) {
+      this.log.info(`changing statusRefreshInterval from ${this.oldRefreshInterval} to ${this.statusRefreshInterval} seconds.`);
+      this.oldRefreshInterval = this.statusRefreshInterval;
+    }
     return this.statusRefreshInterval;
   }
 
-  async getCurrentStatus(nickname : string) {
-    this.currentStatus = '';
-    this.runPy('getVacuumStatus.py', [nickname],
-      async (error, stdout, stderr) => {
-        if (error) {
-          this.log.info(`error: ${error.message}`);
-          this.getCurrentStatusFinished = true;
-          return;
-        }
-        if (stderr) {
-          this.log.info(`stderr: ${stderr}`);
-          this.getCurrentStatusFinished = true;
-          return;
-        }
-        const line = stdout.slice(0, -1);  // Strip off trailing newline ('\n')
-        this.myLogger(`Current status = '${line}'`);
-        const fields = line.split( ':' );
-        this.currentStatus = fields[0];
-        this.batteryLevel = Number(fields[1]);
-        this.isDocked = fields[2].toLowerCase() === 'true';
-        this.errorCode = fields[3];
-        this.myLogger(`in getCurrentStatus(): currentStatus = '${this.currentStatus}', batteryLevel = ${this.batteryLevel},
-                      isDocked = ${this.isDocked}, errorCode = '${this.errorCode}'`);
-        if( this.roboticVacuum !== undefined ) {
-          /*
-           *  Update battery status in UI
-           */
-          this.roboticVacuum.updateAttribute(PowerSource.Cluster.id, 'batPercentRemaining', this.batteryLevel * 2, this.log);
-          if( this.batteryLevel === 100 ) {
-            this.roboticVacuum.updateAttribute(PowerSource.Cluster.id, 'batChargeState',
-              PowerSource.BatChargeState.IsAtFullCharge, this.log);
-            if( this.batteryWasCharging ) {
-              this.batteryWasCharging = false;
-              this.pokeStatusLoop = true;
-            }
-          } else {
-            if( this.isDocked ) {
-              this.roboticVacuum.updateAttribute(PowerSource.Cluster.id, 'batChargeState',
-                PowerSource.BatChargeState.IsCharging, this.log);
-              this.batteryWasCharging = true;
-            } else {
-              this.roboticVacuum.updateAttribute(PowerSource.Cluster.id, 'batChargeState',
-                PowerSource.BatChargeState.IsNotCharging, this.log);
-              this.batteryWasCharging = false;
-            }
-          }
-        }
-        /*
-         * Show the vacuum's state in the Home app. Every Wyze mode is mapped (see
-         * matterStateFor), including runs started outside Home, and Charging vs Docked.
-         * The state is only written when it changes from what was last shown, so a
-         * command just sent from Home isn't undone by a poll that ran before the
-         * vacuum reacted.
-         */
-        const target = this.matterStateFor(this.currentStatus, this.batteryLevel, this.isDocked);
-        if( target && this.roboticVacuum ) {
-          const key = this.stateKey(target.runMode, target.opState);
-          const inGrace = Date.now() < this.commandGraceUntil;
-          if( key !== this.lastAppliedState && !inGrace ) {
-            this.lastAppliedState = key;
-            await this.roboticVacuum.setAttribute('RvcRunMode', 'currentMode', target.runMode, this.log);
-            await this.roboticVacuum.setAttribute('RvcOperationalState', 'operationalState', target.opState, this.log);
-            await this.roboticVacuum.setAttribute('RvcOperationalState', 'operationalError',
-              { errorStateId: RvcOperationalState.ErrorState.NoError }, this.log);
-            this.log.info(`Vacuum is ${target.label} (${this.currentStatus}, battery ${this.batteryLevel}%)`);
-          }
-        } else if( this.currentStatus !== this.oldStatus ) {
-          this.log.info(`Unrecognised vacuum status '${this.currentStatus}'; Home app state left unchanged`);
-        }
-        this.oldStatus = this.currentStatus;
-        /*
-         * Determine statusRefreshInterval: fast while cleaning, pausing or returning
-         * (or when the state is unknown), slower while docked.
-         */
-        if( !target || target.busy || Date.now() < this.commandGraceUntil ) {
-          this.statusRefreshInterval = Number( this.config.busyStatusCheckRefreshInterval );  // Active
-        } else if( this.batteryLevel < 100 ) {
-          this.statusRefreshInterval = Number( this.config.idleStatusCheck2RefreshInterval );  // Docked battery < 100% charge
-        } else {
-          this.statusRefreshInterval = Number( this.config.idleStatusCheck1RefreshInterval );  // Docked battery full charge
-        }
+  /***************** Find the vacuum and its rooms **********************/
 
-        if( this.statusRefreshInterval !== this.oldRefreshInterval ) {
-          this.log.info(`changing statusRefreshIinterval from ${this.oldRefreshInterval} to ${this.statusRefreshInterval} seconds.`);
-          this.oldRefreshInterval = this.statusRefreshInterval;
-        }
-        this.getCurrentStatusFinished = true;
-        return this.statusRefreshInterval;
-      });
-  }
-
-  /***************** Find Devices **********************/
-
+  // Uses the last robot vacuum on the Wyze account (nickname and MAC).
   async findDevices() {
-    let cntr = 0;
-    this.discoverDevicesFinished = false;
-    await this.discoverDevices();
-    this.myLogger('waiting for discoverDevices() to finish');
-    while( ! this.discoverDevicesFinished ) {
-      if( cntr++ > 45 ) {  // Wait up to 45 seconds (a first login with 2FA can take a while)
-        break;
-      }
-      await setTimeout(1000);  // Delay 1 second
-      this.myLogger(`DD cntr = '${cntr}'`);
+    const r = await this.py('getVacuumDeviceList.py', []);
+    if( !r.ok ) {
+      this.log.info(`Could not list Wyze devices: ${r.stderr}`);
+      return;
+    }
+    for( const line of r.stdout.split('\n').filter((l) => l.trim() !== '') ) {
+      const sep = line.lastIndexOf(':');   // nickname may contain ':', the MAC doesn't
+      this.nickname = line.slice(0, sep);
+      this.macAddr = line.slice(sep + 1);
+      this.myLogger(`Found vacuum '${this.nickname}' (${this.macAddr})`);
     }
   }
 
-  async discoverDevices() {
-    const nickNames : string[] = [];
-    const macAddrs : string[] = [];
-    this.nickname = ''
-    //
-    // Make list of nicknames for each vacuum.
-    //
-    this.myLogger('Before exec getVacuumDeviceList.py');
-    this.runPy('getVacuumDeviceList.py', [],
-      (error, stdout, stderr) => {
-        if (error) {
-          this.log.info(`error: ${error.message}`);
-          this.discoverDevicesFinished = true;
-          return;
-        }
-        if (stderr) {
-          this.log.info(`stderr: ${stderr}`);
-          this.discoverDevicesFinished = true;
-          return;
-        }
-        let line = '';
-
-        // Get individual lines of output from stdout
-        for(let i = 0; i < stdout.length; i++) {
-          const c = stdout.charAt(i);
-          if( c === '\n') {
-            const fields = line.split(':');
-            nickNames.push( fields[0] );
-            macAddrs.push( fields[1] );
-            line = '';
-            continue;
-          }
-          line = line.concat( stdout.charAt(i) );
-        }
-
-        // loop over the discovered devices.
-        this.myLogger(`nickNames.length = ${nickNames.length}`);
-        for (let i = 0; i < nickNames.length; i++) {
-          this.nickname = nickNames[i];
-          this.macAddr = macAddrs[i];
-          this.myLogger(`in discoverDevices(), Device nickname = '${this.nickname}' MAC addr = '${this.macAddr}'`);
-        }
-        this.discoverDevicesFinished = true;
-        return;
-      },
-    );
-  }
-
-  /***************** Find supported areas (Rooms) **********************/
-
+  // Lines of "room:floor", including one "*Entire Floor*:floor" per floor.
   async getRoomList() {
-    let cntr = 0;
-    this.getRoomsFinished = false;
-    await this.getRooms(this.nickname);
-    this.myLogger('waiting for getRooms() to finish');
-    while( ! this.getRoomsFinished ) {
-      if( cntr++ > 45 ) {  // Wait up to 45 seconds (a first login with 2FA can take a while)
-        break;
-      }
-      await setTimeout(1000);  // Delay 1 second
-      this.myLogger(`GR cntr = '${cntr}'`);
+    const r = await this.py('getVacuumFloors.py', [this.nickname]);
+    if( !r.ok ) {
+      this.log.info(`Could not read the vacuum's rooms: ${r.stderr}`);
+      return;
     }
-    this.myLogger(`at end of getRooms, this.Rooms.length() = '${this.rooms.length}'`);
-  }
-
-  async getRooms(nickname : string) {
-    //
-    // Get list of rooms from Wyze from the current map for this device
-    //
-    this.runPy('getVacuumFloors.py', [nickname],
-      (error, stdout, stderr) => {
-        if (error) {
-          this.log.info(`error: ${error.message}`);
-          this.getRoomsFinished = true;
-          return;
-        }
-        if (stderr) {
-          this.log.info(`stderr: ${stderr}`);
-          this.getRoomsFinished = true;
-          return;
-        }
-        let line = '';
-        // Get individual lines of output from stdout
-        for (let i = 0; i < stdout.length; i++) {
-          const c = stdout.charAt(i);
-          if (c === '\n') {
-            this.rooms.push(line);
-            this.myLogger(`room = '${line}'`);
-            line = '';
-            continue;
-          }
-          line = line.concat(stdout.charAt(i));
-        }
-        this.myLogger(`in discoverRooms(): this.rooms.length: ${this.rooms.length}`);
-        this.getRoomsFinished = true;
-        return;
-      });
+    this.rooms = r.stdout.split('\n').filter((l) => l.trim() !== '');
+    this.myLogger(`Rooms: ${this.rooms.join(', ')}`);
   }
 
   // =========================== Utilities ===================================
@@ -810,6 +475,16 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
       (error, stdout, stderr) => callback(error, String(stdout), String(stderr)));
   }
 
+  // runPy as a promise. ok = exit code 0 and nothing on stderr.
+  py(script : string, args : string[]) : Promise<{ ok : boolean, stdout : string, stderr : string }> {
+    return new Promise((resolve) => {
+      this.runPy(script, args, (error, stdout, stderr) => {
+        const err = stderr.trim() || (error ? error.message : '');
+        resolve({ ok: !error && !stderr.trim(), stdout, stderr: err });
+      });
+    });
+  }
+
   helperDir() : string {
     const configured = String(this.config.path2py_stubs ?? '').trim();
     if (configured) {
@@ -833,33 +508,65 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
    * Mode names come from wyze_sdk.models.devices.vacuums.VacuumMode.
    */
   matterStateFor(status : string, battery : number, onDock : boolean)
-    : { runMode : number, opState : number, busy : boolean, label : string } | undefined {
+    : { runMode : number, opState : number, busy : boolean, onDock : boolean, label : string } | undefined {
     const S = RvcOperationalState.OperationalState;
     switch( status.replace(/^VacuumMode\./, '') ) {
       case 'CLEANING':
       case 'SWEEPING':
       case 'QUICK_MAPPING_MAPPING':
-        return { runMode: 2, opState: S.Running, busy: true, label: 'cleaning' };
+        return { runMode: 2, opState: S.Running, busy: true, onDock: false, label: 'cleaning' };
       case 'PAUSED':
       case 'PAUSE':
       case 'QUICK_MAPPING_PAUSED':
       case 'BREAK_POINT':
-        return { runMode: 2, opState: S.Paused, busy: true, label: 'paused' };
+        return { runMode: 2, opState: S.Paused, busy: true, onDock: false, label: 'paused' };
       case 'RETURNING_TO_CHARGE':
       case 'FINISHED_RETURNING_TO_CHARGE':
       case 'FULL_FINISH_SWEEPING_ON_WAY_CHARGE':
       case 'QUICK_MAPPING_COMPLETED_RETURNING_TO_CHARGE':
-        return { runMode: 1, opState: S.SeekingCharger, busy: true, label: 'returning to the dock' };
+        return { runMode: 1, opState: S.SeekingCharger, busy: true, onDock: false, label: 'returning to the dock' };
       case 'DOCKED_NOT_COMPLETE':
       case 'QUICK_MAPPING_DOCKED_NOT_COMPLETE':
-        return { runMode: 2, opState: S.Charging, busy: false, label: 'charging, and will resume cleaning' };
+        return { runMode: 2, opState: S.Charging, busy: false, onDock: true, label: 'charging, and will resume cleaning' };
       case 'IDLE':
         return onDock && battery < 100
-          ? { runMode: 1, opState: S.Charging, busy: false, label: 'docked and charging' }
-          : { runMode: 1, opState: S.Docked, busy: false, label: 'docked' };
+          ? { runMode: 1, opState: S.Charging, busy: false, onDock: true, label: 'docked and charging' }
+          : { runMode: 1, opState: S.Docked, busy: false, onDock: true, label: 'docked' };
       default:
         return undefined;
     }
+  }
+
+  /*
+   * Wyze fault (wyze_sdk VacuumFaultCode name) -> Matter RVC error state shown in the
+   * Home app. 'None' means no fault. An unknown fault is shown as a generic error.
+   */
+  matterErrorFor(fault : string) : { id : number, details : string } | undefined {
+    const E = RvcOperationalState.ErrorState;
+    const name = fault.replace(/^VacuumFaultCode\./, '');
+    if( name === '' || name === 'None' || name === '0' ) {
+      return undefined;
+    }
+    const table : Record<string, [number, string]> = {
+      RADAR_OUT_OF_TIME: [E.NavigationSensorObscured, 'Lidar sensor blocked'],
+      WHEEL_LIFT_UP: [E.Stuck, 'Vacuum not on the ground'],
+      DUST_BOX_NO_EXIST: [E.DustBinMissing, 'Dust bin not installed'],
+      RELOCATE_FAILED: [E.UnableToCompleteOperation, 'Could not find its position on the map'],
+      SLOPE_START: [E.UnableToStartOrResume, 'Vacuum not on flat ground'],
+      COLLISION_EXCEPTION: [E.Stuck, 'Vacuum stuck'],
+      GO_CHARGE_FAILED: [E.FailedToFindChargingDock, 'Could not return to the dock'],
+      STOP_POINT_GO_CHARGE_FAILED: [E.FailedToFindChargingDock, 'Could not return to the dock'],
+      NAVIGATION_FAILED: [E.UnableToCompleteOperation, 'Mapping failed'],
+      GET_OUT_OF_TROUBLE_FAILED: [E.WheelsJammed, 'Wheels stuck'],
+      ROBOT_NO_WATER: [E.WaterTankMissing, 'Water tank not installed'],
+      ROBOT_NO_MOP: [E.MopCleaningPadMissing, 'Mop not installed'],
+      ROBOT_NO_DUSTANDWATER_MOP: [E.WaterTankMissing, 'Water tank and mop not installed'],
+      ROBOT_NO_DUSTANDWATER_HURRI: [E.DustBinMissing, '2-in-1 bin, tank and mop not installed'],
+      ROBOT_NO_WATER_HURRI: [E.WaterTankMissing, '2-in-1 bin and water tank not installed'],
+      ROBOT_IN_VIRTUALWALL: [E.Stuck, 'Stuck in a no-go zone'],
+    };
+    const hit = table[name];
+    return hit ? { id: hit[0], details: hit[1] } : { id: E.UnableToCompleteOperation, details: `Wyze fault ${name}`.slice(0, 64) };
   }
 
   stateKey(runMode : number, opState : number) : string {
@@ -933,6 +640,9 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
   }
 
   async doSweeping() {
+    // Decide between "start a new run" and "resume" on the vacuum's current status,
+    // not on the last poll, which can be from before a pause.
+    await this.getStatus();
     if( this.currentStatus === 'VacuumMode.IDLE' || this.newRoomsSelected ) {
       /*
        *   Check for special case of '*Entire Floor*' being checked In addition to other rooms.

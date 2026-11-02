@@ -79,3 +79,22 @@ Housekeeping only; the plugin behaves exactly as 1.0.1-secure.3.
 - `matterbridge` (^3.11.1) is now a dev dependency, so builds are checked against a real Matterbridge version instead of a hand-made link.
 - The package ships only what the plugin needs (`files` in package.json): compiled code, Python helpers, settings schema, sample config, README, CHANGELOG, LICENSE. No source maps, type declarations or author tooling.
 - Removed the original author's publish script, CODEOWNERS, devcontainer, legacy .eslintrc, unused tsconfig.production.json and donation image.
+
+## [1.0.1-secure.5] - 2026-11-01
+
+### ** Added **
+
+- Wyze faults are shown in the Home app as Matter errors while the vacuum is away from the dock: stuck, not on the ground, wheels jammed, lidar blocked, dust bin / water tank / mop missing, failed to find the dock, mapping or relocation failed, stuck in a no-go zone. Unknown faults show as a generic error with the Wyze fault name. A fault left over once the vacuum is back on the dock is ignored.
+
+### ** Changed **
+
+- Each Wyze call is now awaited directly instead of setting a "finished" flag and polling it once per second for up to 10 seconds (about 290 fewer lines). Commands reach the vacuum up to a second sooner.
+- Resume decides between resuming the current run and starting a new one from a fresh status check, not from the last poll (which could predate a pause).
+- When a command is refused because the vacuum is in another state (e.g. pause while docked), the Home app is refreshed with the real state straight away. Previously this check could never run: the helper's error exit was handled first.
+- README: requirements, features and caveats describe this version; resolved To Do items removed.
+
+### ** Fixed **
+
+- No more "setAttribute vendorName error" at every start in server mode.
+- Log typo "statusRefreshIinterval".
+- Vacuum nicknames containing ':' are parsed correctly.

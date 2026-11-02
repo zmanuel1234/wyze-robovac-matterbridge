@@ -17,29 +17,35 @@ If you like this project and find it useful, please consider giving it a star on
 
 ## Requirements
 
-Python version must be >= 3.11.2.
+- Python 3.9 or newer, with wyze-sdk ≥ 2.2.0 installed, ideally in its own virtual environment ([wyze-sdk](https://github.com/shauntarves/wyze-sdk)). Tested with wyze-sdk 2.2.0 on Python 3.9 (Raspberry Pi OS 11) and 3.11. Python 3.12+ installs a newer wyze-sdk with the same login and vacuum code.
+- Matterbridge ≥ 3.11 ([installation](https://github.com/Luligu/matterbridge/blob/main/README.md)). Earlier releases of this plugin do not start on Matterbridge 3.11.
+- A Wyze API key ID and API key from the [Wyze developer console](https://developer-api-console.wyze.com/#/apikey/view). Any characters are fine; they are never passed through a shell.
+- If your Wyze account uses two-factor authentication, it must use an authenticator app (not SMS), and you need its setup key (see `totpKey` below).
+- For Apple Home: iOS 18.4 or later and a home hub (Apple TV or HomePod).
 
-wyze-sdk version must be >= 2.2.0.  Installation instructions are [here](https://github.com/shauntarves/wyze-sdk).
+## What it does
 
-matterbridge version must be >= 3.4.0. Installation instructions are [here](https://github.com/Luligu/matterbridge/blob/main/README.md).
-
-Visit the Wyze developer API portal to generate an API ID/KEY: **https://developer-api-console.wyze.com/#/apikey/view**.
-This info is used in the Matterbridge Config settings for this plugin. See the **`Configuration`** section below. Be careful to check that the generated keys do **NOT** contain any 'shell' special characters like '*' or '|' (vertical bar). If they do, delete the keys (via the web browser interface) and regenerate them.
+- Exposes the S200 as a Matter robot vacuum with the rooms and floors from the Wyze app, so Home can clean selected rooms, pause, resume and send it to the dock.
+- Shows the vacuum's real state, including runs started from the Wyze app, a schedule or the button: cleaning, paused, returning to the dock, charging (also "charging, will resume") and docked.
+- Shows Wyze faults as Matter errors while the vacuum is away from the dock: stuck, wheels jammed, lidar blocked, dust bin / water tank / mop missing, failed to find the dock, and so on.
+- Offers three cleaning modes mapped to the suction levels: Standard, Quiet and Strong (set while the vacuum is docked).
+- Reports the battery level and whether it is charging.
 
 ## Caveats
 
-- This plugin was developed and proved-in on a RPi 5 running the latest versions of Raspbian Linux (6.12.47+rpt-rpi-2712), and Matterbridge (3.4.0) running in 'bridge' mode and **NOT in a Docker container**. If you are running in ANY other environment (Windows, Mac OS, Docker, Home Assistant, Synergy NAS, etc.) and have any issues with installation and or running, you are on your own. If you are successful in alternate environments I welcome your feedback so I can document it here.
+- Tested on a Raspberry Pi 4 (Raspberry Pi OS 11, 32-bit) with Matterbridge 3.11.1 running as a service under its own user, in bridge mode with the vacuum in server mode, and with Apple Home. Other setups (Docker, Home Assistant, other controllers) are untested.
 
-- If you have multiple vacuums you will need to run multiple instances of Matterbridge, one per vacuums, whitelisting each vacuum to a particular instance. Since I only have one vacuum this situation has never been tested.
+- One vacuum per Matterbridge instance. With several vacuums, run one instance per vacuum and whitelist one in each (untested).
 
-- The plugin only reads the room list once when it starts. If you re-map your floorplan with the Wyze app, the plugin must be restarted.
+- The room list is read when the plugin starts. After re-mapping in the Wyze app, restart Matterbridge.
 
-- If you start sweeping a room that is on a different floor than the 'current' floor shown in the Wyze app, the plugin will cause the map shown in the app to change to the floor the room being swept is on.
+- All selected rooms should be on the same floor; the plugin switches the Wyze map to the floor of the first selected room. Selecting **\*Entire Floor\*** overrides any other room selection.
 
-- The statusCheckRefreshInterval indicates how often to check that the vacuum is still sweeping after being started. Wyze servers start ignoring requests if you poll them too often. This will cause the **`py_helpers`** scripts to fail and the plugin will get out of sync with the vacuum. If that happens, use the Wyze app to send the vacuum back to the dock and they should re-sync after it docks.
+- The status is polled: every 45 s while cleaning, paused or returning, every 60 s while charging and every 5 min when fully charged (all configurable). Wyze may ignore requests if they come too often.
 
-- If **\*Entire Floor\*** is selected in the list of rooms to be cleaned it will override any other room selection. In this context, selecting "Entire Floor" in the plugin UI is the same as using the Wyze app and not selecting any specific rooms, which indicates that the entire floor should be swept.
-- From the time a room cleaning is requested, it takes 10-15 seconds for the vacuum to activate.
+- Apple Home may keep showing an old battery percentage even though it receives updates; the Wyze app and the Matterbridge UI show the current value.
+
+- After a command it takes 10–15 seconds for the vacuum to react.
 
 ## Configuration
 
@@ -57,8 +63,8 @@ Use the settings UI in Matterbridge browser interface to configure your Wyze acc
       "api_key": "YOUR WYZE ACCOUNT API_KEY",
       "totpKey": "AUTHENTICATOR SETUP SEED (only if 2FA uses an authenticator app)",
       "busyStatusCheckRefreshInterval": 45,
-      "idleStatusCheck1RefreshInterval": 1800,
-      "idleStatusCheck2RefreshInterval": 120,
+      "idleStatusCheck1RefreshInterval": 300,
+      "idleStatusCheck2RefreshInterval": 60,
       "path2py_stubs": "",
       "pythonPath": "/opt/wyze-venv/bin/python",
       "tokenFile": "",
@@ -74,9 +80,9 @@ Use the settings UI in Matterbridge browser interface to configure your Wyze acc
 - **`pythonPath`** – The Python interpreter that has `wyze-sdk` installed, e.g. the `python` inside a virtual environment. Defaults to `python3`.
 - **`tokenFile`** – Where Wyze access/refresh tokens are cached (owner-only permissions). Defaults to `~/.matterbridge/wyze-robovac/tokens.json`.
 - **`path2py_stubs`** – Folder with the Python helper scripts. Leave empty to use the ones bundled with the plugin.
-- **`busyStatusCheckRefreshInterval`** – Seconds between status checks while the vacuum is sweeping. Defaults to 45.
-- **`idleStatusCheck1RefreshInterval`** – Seconds between status checks when docked with a full battery. Defaults to 1800 (30 min).
-- **`idleStatusCheck2RefreshInterval`** – Seconds between status checks when docked and charging. Defaults to 120 (2 min).
+- **`busyStatusCheckRefreshInterval`** – Seconds between status checks while the vacuum is cleaning, paused or returning to the dock. Defaults to 45 (minimum 25).
+- **`idleStatusCheck1RefreshInterval`** – Seconds between status checks when docked with a full battery. Defaults to 300 (5 min, the minimum). This is also how quickly a run started outside Home shows up.
+- **`idleStatusCheck2RefreshInterval`** – Seconds between status checks when docked and charging. Defaults to 60 (1 min, the minimum).
 
 ### How credentials are handled (1.0.1-secure.1)
 
@@ -84,9 +90,7 @@ The plugin never passes credentials on a command line and never logs them. Each 
 
 ## To Do
 
-- The Manufacturer name, model number, and firnware version need to be set on the **`Info`** page of the UI.
-
-- There is no error reporting if the vacuum gets stuck or lost, dust bin removed, etc.
+- Set the manufacturer name, model and firmware version shown on the device's **Info** page.
 
 ## Other Info
 
