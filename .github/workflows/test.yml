@@ -1,0 +1,55 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 6 * * 1'   # Mondays: catches breakage from new Matterbridge 3.x or wyze-sdk releases
+
+permissions:
+  contents: read
+
+jobs:
+  plugin:
+    name: Plugin (Node 22, Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.9', '3.12']   # 3.9 is what the Pi (Raspberry Pi OS 11) runs
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: npm ci --no-fund --no-audit
+      - run: npm run dev:matterbridge
+      - run: npm run check:deps
+      - run: npm run lint
+      - run: npm test
+        env:
+          PYTHON: python
+
+  wyze-sdk:
+    name: Real wyze-sdk ${{ matrix.label }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { label: '2.2.0 (Python 3.9, as on the Pi)', python: '3.9', sdk: '==2.2.0' }
+          - { label: 'latest (Python 3.12)', python: '3.12', sdk: '' }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install "wyze-sdk${{ matrix.sdk }}"
+      - run: python test/sdk_contract.py

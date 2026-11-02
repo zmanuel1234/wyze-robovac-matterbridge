@@ -105,5 +105,8 @@ Thanks again to [Shaun Tarves](https://github.com/shauntarves/wyze-sdk) for the 
 ```bash
 npm install
 npm run dev:matterbridge   # Matterbridge for type checking; not saved in package.json, because Matterbridge refuses plugins that list it
+npm test                   # builds, then runs the tests against a fake Wyze account (Python 3 needed, no Wyze login)
 npm pack                   # checks dependencies, lints, builds and writes the .tgz
 ```
+
+The tests in `test/` run a real Matter server with the vacuum device, drive it through the plugin's command handlers against a fake wyze-sdk (`test/mock`), exercise the long-running Python helper (timeouts, crashes, token refresh, failed logins, credentials kept out of the process environment), and have Matterbridge's own plugin manager add the packed plugin. `npm run test:sdk`, run with the real wyze-sdk installed, checks that every wyze-sdk name the plugin relies on still exists. GitHub runs all of this on every push and once a week (`.github/workflows/test.yml`), the weekly run with the newest Matterbridge 3.x and wyze-sdk.

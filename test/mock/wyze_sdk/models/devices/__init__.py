@@ -1,0 +1,19 @@
+import enum
+
+
+# Same names as wyze_sdk.models.devices.VacuumMode (values don't matter here).
+class VacuumMode(enum.Enum):
+    CLEANING = 1
+    PAUSED = 2
+    FINISHED_RETURNING_TO_CHARGE = 3
+    RETURNING_TO_CHARGE = 4
+    DOCKED_NOT_COMPLETE = 5
+    QUICK_MAPPING_MAPPING = 6
+    QUICK_MAPPING_PAUSED = 7
+    QUICK_MAPPING_COMPLETED_RETURNING_TO_CHARGE = 8
+    QUICK_MAPPING_DOCKED_NOT_COMPLETE = 9
+    BREAK_POINT = 10
+    IDLE = 11
+    PAUSE = 12
+    SWEEPING = 13
+    FULL_FINISH_SWEEPING_ON_WAY_CHARGE = 14
