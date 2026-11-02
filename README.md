@@ -102,7 +102,7 @@ Thanks again to [Shaun Tarves](https://github.com/shauntarves/wyze-sdk) for the 
 
 ## Updates from GitHub
 
-Releases are built and tested by GitHub Actions: push a tag matching `package.json`'s version (`git tag v1.0.12 && git push origin v1.0.12`) and `.github/workflows/release.yml` runs the tests, builds the package (with `build-info.json` naming the tag and commit) and attaches it, its `SHA256SUMS` and `tools/pi-update.sh` to a GitHub release. On the Pi, `sudo wyze-plugin-update check` compares the installed package with the newest release and `sudo wyze-plugin-update` installs it. The plugin's first log line shows which release and commit is running.
+Releases are built and tested by GitHub Actions: on GitHub, open Actions → Release → Run workflow (or push a tag matching `package.json`'s version, e.g. `v1.0.12`), and `.github/workflows/release.yml` runs the tests, builds the package (with `build-info.json` naming the tag and commit) and attaches it, its `SHA256SUMS` and `tools/pi-update.sh` to a GitHub release. On the Pi, `sudo wyze-plugin-update check` compares the installed package with the newest release and `sudo wyze-plugin-update` installs it. The plugin's first log line shows which release and commit is running.
 
 ## Building from source
 

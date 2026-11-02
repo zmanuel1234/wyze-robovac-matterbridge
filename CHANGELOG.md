@@ -84,7 +84,7 @@ Housekeeping only; the plugin behaves exactly as 1.0.1-secure.3.
 
 ### Added
 
-- Releases are built and tested by GitHub: pushing a tag like `v1.0.12` runs the tests, builds the package with a `build-info.json` recording the tag and commit, and publishes it with its SHA-256 checksum as a GitHub release.
+- Releases are built and tested by GitHub: running the Release workflow on GitHub (or pushing a tag like `v1.0.12`) runs the tests, builds the package with a `build-info.json` recording the tag and commit, and publishes it with its SHA-256 checksum as a GitHub release.
 - The plugin logs its version and, for GitHub-built packages, the release, commit and build date at startup, e.g. `Initializing platform: matterbridge-wyze-robovac 1.0.12 (GitHub release v1.0.12, commit 2f61f6e, built 2026-11-02)`.
 - `tools/pi-update.sh` (installed on the Pi as `wyze-plugin-update`): shows what is installed against the newest release, installs a release after checking its checksum, backs up the previous version, restarts Matterbridge and confirms the plugin came up; `restore` puts a backed-up version back.
 

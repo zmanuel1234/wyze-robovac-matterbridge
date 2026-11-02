@@ -1,13 +1,17 @@
 name: Release
 
-# Push a tag like v1.0.12 (matching package.json) to publish that commit as a GitHub release:
-# the tests run first, then the package is built here, with build-info.json recording the
+# Publishes a commit as a GitHub release, in either of two ways:
+#   - on GitHub: Actions -> Release -> "Run workflow" on main. The version comes from
+#     package.json and the tag (e.g. v1.0.12) is created by the release itself;
+#   - from a computer: push a tag like v1.0.12 that matches package.json.
+# The tests run first, then the package is built here, with build-info.json recording the
 # tag and commit, and attached to the release with its SHA-256 checksum. The Pi installs
 # these releases with `sudo wyze-plugin-update` (tools/pi-update.sh).
 
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -30,22 +34,38 @@ jobs:
           cache: npm
       - run: npm ci --no-fund --no-audit
       - run: npm run dev:matterbridge
-      - name: Check the tag matches package.json
+      - name: Work out the release tag from package.json
+        id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          v=$(node -p "require('./package.json').version")
-          [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "::error::Tag $GITHUB_REF_NAME, but package.json says $v"; exit 1; }
+          tag="v$(node -p "require('./package.json').version")"
+          if [ "$GITHUB_EVENT_NAME" = push ] && [ "$tag" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME, but package.json says $tag"; exit 1
+          fi
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "::error::Release $tag already exists. Raise the version in package.json first."; exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
       - name: Record what this build is
+        env:
+          TAG: ${{ steps.v.outputs.tag }}
         run: >
           node -e "require('fs').writeFileSync('build-info.json', JSON.stringify({
-          tag: process.env.GITHUB_REF_NAME, commit: process.env.GITHUB_SHA, built: new Date().toISOString(),
+          tag: process.env.TAG, commit: process.env.GITHUB_SHA, built: new Date().toISOString(),
           run: process.env.GITHUB_SERVER_URL + '/' + process.env.GITHUB_REPOSITORY + '/actions/runs/' + process.env.GITHUB_RUN_ID
           }, null, 2) + '\n')"
       - run: npm pack   # also checks dependencies, lints and builds (prepack)
       - name: Checksum
         run: sha256sum matterbridge-wyze-robovac-*.tgz | tee SHA256SUMS
       - name: Release notes from CHANGELOG.md
-        run: awk -v v="${GITHUB_REF_NAME#v}" '/^## \[/ { p = index($0, "[" v "]") > 0 } p' CHANGELOG.md > notes.md
+        env:
+          TAG: ${{ steps.v.outputs.tag }}
+        run: awk -v v="${TAG#v}" '/^## \[/ { p = index($0, "[" v "]") > 0 } p' CHANGELOG.md > notes.md
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" matterbridge-wyze-robovac-*.tgz SHA256SUMS tools/pi-update.sh --title "$GITHUB_REF_NAME" --notes-file notes.md
+          TAG: ${{ steps.v.outputs.tag }}
+        run: >
+          gh release create "$TAG" matterbridge-wyze-robovac-*.tgz SHA256SUMS tools/pi-update.sh
+          --target "$GITHUB_SHA" --title "$TAG" --notes-file notes.md
