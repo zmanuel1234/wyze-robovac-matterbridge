@@ -11,34 +11,35 @@ permissions:
   contents: read
 
 jobs:
+  # Each job runs in Debian with the given Python (GitHub's own Ubuntu machines no longer
+  # offer Python 3.9, the version Raspberry Pi OS 11 has).
   plugin:
     name: Plugin (Node 22, Python ${{ matrix.python }})
     runs-on: ubuntu-latest
+    container: python:${{ matrix.python }}-bookworm
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        python: ['3.9', '3.12']   # 3.9 is what the Pi (Raspberry Pi OS 11) runs
+        python: ['3.9', '3.12']   # 3.9 is what the Pi runs
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python }}
       - run: npm ci --no-fund --no-audit
       - run: npm run dev:matterbridge
       - run: npm run check:deps
       - run: npm run lint
       - run: npm test
         env:
-          PYTHON: python
+          PYTHON: python3
 
   wyze-sdk:
     name: Real wyze-sdk ${{ matrix.label }}
     runs-on: ubuntu-latest
+    container: python:${{ matrix.python }}-bookworm
     timeout-minutes: 10
     strategy:
       fail-fast: false
@@ -48,8 +49,5 @@ jobs:
           - { label: 'latest (Python 3.12)', python: '3.12', sdk: '' }
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python }}
-      - run: pip install "wyze-sdk${{ matrix.sdk }}"
-      - run: python test/sdk_contract.py
+      - run: pip install --no-cache-dir "wyze-sdk${{ matrix.sdk }}"
+      - run: python3 test/sdk_contract.py
