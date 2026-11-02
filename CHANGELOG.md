@@ -80,6 +80,18 @@ Housekeeping only; the plugin behaves exactly as 1.0.1-secure.3.
 - The package ships only what the plugin needs (`files` in package.json): compiled code, Python helpers, settings schema, sample config, README, CHANGELOG, LICENSE. No source maps, type declarations or author tooling.
 - Removed the original author's publish script, CODEOWNERS, devcontainer, legacy .eslintrc, unused tsconfig.production.json and donation image.
 
+## [1.0.12] - 2026-11-01
+
+### Added
+
+- Releases are built and tested by GitHub: pushing a tag like `v1.0.12` runs the tests, builds the package with a `build-info.json` recording the tag and commit, and publishes it with its SHA-256 checksum as a GitHub release.
+- The plugin logs its version and, for GitHub-built packages, the release, commit and build date at startup, e.g. `Initializing platform: matterbridge-wyze-robovac 1.0.12 (GitHub release v1.0.12, commit 2f61f6e, built 2026-11-02)`.
+- `tools/pi-update.sh` (installed on the Pi as `wyze-plugin-update`): shows what is installed against the newest release, installs a release after checking its checksum, backs up the previous version, restarts Matterbridge and confirms the plugin came up; `restore` puts a backed-up version back.
+
+### Changed
+
+- The package's homepage, repository and issue links point to this repository.
+
 ## [1.0.11] - 2026-11-01
 
 ### Added

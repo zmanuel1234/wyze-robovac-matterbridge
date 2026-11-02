@@ -22,3 +22,6 @@ temp/
 # Python bytecode caches
 __pycache__/
 *.pyc
+
+# Written by the release workflow only
+build-info.json

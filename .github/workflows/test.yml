@@ -2,8 +2,10 @@ name: Tests
 
 on:
   push:
+    branches: ['**']   # tags run these tests through release.yml instead
   pull_request:
   workflow_dispatch:
+  workflow_call:       # used by release.yml
   schedule:
     - cron: '17 6 * * 1'   # Mondays: catches breakage from new Matterbridge 3.x or wyze-sdk releases
 

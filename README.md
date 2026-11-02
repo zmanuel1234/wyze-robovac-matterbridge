@@ -8,7 +8,7 @@
 
 Matterbridge plugin to control and report status of the Wyze S200 Robot Vacuum
 
-> **1.0.11** is an unofficial, patched version of the original 1.0.1: secure credential handling, token caching, authenticator-app 2FA, Matterbridge 3.11 support, full vacuum state and fault reporting, and suction modes. See `CHANGELOG.md`. Don't install updates offered in the Matterbridge UI: they would replace it with the original plugin.
+> **1.0.12** is an unofficial, patched version of the original 1.0.1: secure credential handling, token caching, authenticator-app 2FA, Matterbridge 3.11 support, full vacuum state and fault reporting, and suction modes. See `CHANGELOG.md`. Don't install updates offered in the Matterbridge UI: they would replace it with the original plugin.
 
 A Robot Vacuum Cleaner device (supported by SmartThings, Alexa, Home Assistant and partially by Apple Home). Read also https://github.com/Luligu/matterbridge/discussions/264. 
 
@@ -99,6 +99,10 @@ Special thanks to the following projects for reference and inspiration:
 - [matterbridge-dynamic-plugin-example](https://github.com/Luligu/matterbridge-example-dynamic-platform).
 
 Thanks again to [Shaun Tarves](https://github.com/shauntarves/wyze-sdk) for the Python libraries that this plugin utilizes, [Luligu](https://github.com/Luligu/matterbridge) for Matterbridge, and thanks to others for volunteering their time to help fix bugs and add support for other features.
+
+## Updates from GitHub
+
+Releases are built and tested by GitHub Actions: push a tag matching `package.json`'s version (`git tag v1.0.12 && git push origin v1.0.12`) and `.github/workflows/release.yml` runs the tests, builds the package (with `build-info.json` naming the tag and commit) and attaches it, its `SHA256SUMS` and `tools/pi-update.sh` to a GitHub release. On the Pi, `sudo wyze-plugin-update check` compares the installed package with the newest release and `sudo wyze-plugin-update` installs it. The plugin's first log line shows which release and commit is running.
 
 ## Building from source
 

@@ -24,6 +24,7 @@ import { MatterbridgeEndpoint, MatterbridgeDynamicPlatform, PlatformConfig } fro
 import { RoboticVacuumCleaner } from 'matterbridge/devices';
 import { AnsiLogger, debugStringify } from 'matterbridge/logger';
 import { RvcRunMode, PowerSource, ServiceArea, RvcOperationalState, RvcCleanMode } from 'matterbridge/matter/clusters';
+import { readFileSync } from 'fs';
 import { homedir } from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -100,7 +101,7 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
       );
     }
 
-    this.log.info('Initializing platform:', this.config.name);
+    this.log.info(`Initializing platform: ${this.config.name} ${this.buildInfo()}`);
     if (config.whiteList === undefined) {
       config.whiteList = [];
     }
@@ -578,6 +579,24 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
   // Run one helper command, e.g. py('getVacuumStatus.py', [nickname]). ok = it succeeded.
   py(script : string, args : string[]) : Promise<PyResult> {
     return this.worker.request(script.replace(/\.py$/, ''), args);
+  }
+
+  // "1.0.12 (GitHub release v1.0.12, commit 2f61f6e, built 2026-11-02)" for packages built
+  // by the release workflow, which adds build-info.json; "1.0.12 (local build)" otherwise.
+  buildInfo() : string {
+    const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+    const read = (f : string) => {
+      try {
+        return JSON.parse(readFileSync(path.join(root, f), 'utf8'));
+      } catch {
+        return undefined;
+      }
+    };
+    const version = read('package.json')?.version ?? '?';
+    const b = read('build-info.json');
+    return b?.commit
+      ? `${version} (GitHub release ${b.tag}, commit ${String(b.commit).slice(0, 7)}, built ${String(b.built).slice(0, 10)})`
+      : `${version} (local build)`;
   }
 
   // The py_helpers folder shipped with this plugin (dist/../py_helpers).

@@ -1,15 +1,16 @@
 {
   "name": "matterbridge-wyze-robovac",
-  "version": "1.0.11",
+  "version": "1.0.12",
   "description": "Wyze RoboVac",
   "author": "https://github.com/RMCob",
   "license": "Apache-2.0",
-  "homepage": "https://www.npmjs.com/package/matterbridge-wyze-robovac",
+  "homepage": "https://github.com/zmanuel1234/wyze-robovac-matterbridge#readme",
   "type": "module",
   "main": "dist/index.js",
   "files": [
     "dist/**/*.js",
     "py_helpers/*.py",
+    "build-info.json",
     "matterbridge-wyze-robovac.schema.json",
     "matterbridge-wyze-robovac.config.json",
     "matterbridge.svg",
@@ -19,10 +20,10 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/RMCob/matterbridge-wyze-robovac.git"
+    "url": "git+https://github.com/zmanuel1234/wyze-robovac-matterbridge.git"
   },
   "bugs": {
-    "url": "https://github.com/RMCob/matterbridge-wyze-robovac/issues"
+    "url": "https://github.com/zmanuel1234/wyze-robovac-matterbridge/issues"
   },
   "keywords": [
     "matterbridge",
