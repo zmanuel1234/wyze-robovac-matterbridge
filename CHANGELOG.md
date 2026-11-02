@@ -85,6 +85,7 @@ Housekeeping only; the plugin behaves exactly as 1.0.1-secure.3.
 ### Changed
 
 - The plugin's author, shown in the Matterbridge plugin list, reads "RMCob, patched by zmanuel1234". The original author's copyright and licence notices are unchanged.
+- The plugin's description in that list reads "Wyze S200 Robot Vacuum (patched)". The package name stays matterbridge-wyze-robovac, which Matterbridge uses for the settings and the Home pairing.
 
 ## [1.0.12] - 2026-11-01
 
