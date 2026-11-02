@@ -1,13 +1,22 @@
 {
   "name": "matterbridge-wyze-robovac",
-  "version": "1.0.1-secure.3",
+  "version": "1.0.1-secure.4",
   "description": "Wyze RoboVac",
   "author": "https://github.com/RMCob",
   "license": "Apache-2.0",
   "homepage": "https://www.npmjs.com/package/matterbridge-wyze-robovac",
   "type": "module",
   "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "files": [
+    "dist/**/*.js",
+    "py_helpers/*.py",
+    "matterbridge-wyze-robovac.schema.json",
+    "matterbridge-wyze-robovac.config.json",
+    "matterbridge.svg",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/RMCob/matterbridge-wyze-robovac.git"
@@ -32,36 +41,16 @@
     "node": ">=22.0.0 <23.0.0 || >=24.0.0 <25.0.0"
   },
   "scripts": {
-    "lint": "eslint src/**.ts --max-warnings=0",
-    "tsc": "tsc",
-    "build": "rimraf ./dist ./tsconfig.tsbuildinfo && tsc",
-    "cleanbuild": "/bin/rm -f tsconfig.tsbuildinfo && rimraf ./dist && npm ci && npm audit fix --force && /bin/rm -rf node_modules/matterbridge && npm link matterbridge && tsc",
-    "prepublishOnly": "npm run lint && npm run build"
+    "lint": "eslint src --max-warnings=0",
+    "build": "node -e \"for (const p of ['dist','tsconfig.tsbuildinfo']) require('fs').rmSync(p, { recursive: true, force: true })\" && tsc",
+    "prepack": "npm run lint && npm run build"
   },
-  "dependencies": {},
   "devDependencies": {
-    "@eslint/compat": "^1.4.1",
-    "@eslint/eslintrc": "^3.3.1",
-    "@eslint/js": "^9.39.1",
-    "@eslint/json": "^0.14.0",
-    "@types/node": "24.0.10",
-    "eslint": "^9.39.1",
-    "eslint-config-prettier": "10.1.5",
-    "eslint-plugin-import": "2.32.0",
-    "eslint-plugin-jest": "29.0.1",
-    "eslint-plugin-jsdoc": "51.3.3",
-    "eslint-plugin-n": "17.21.0",
-    "eslint-plugin-prettier": "5.5.1",
-    "eslint-plugin-promise": "7.2.1",
-    "globals": "^16.5.0",
-    "jest": "^29.7.0",
-    "js-yaml": "^4.1.1",
-    "node-ansi-logger": "3.1.1",
-    "node-persist-manager": "2.0.0",
-    "npm-check-updates": "18.0.1",
-    "rimraf": "^6.1.0",
-    "shx": "0.4.0",
-    "typescript": "^5.8.3",
-    "typescript-eslint": "8.46.3"
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^22.20.5",
+    "eslint": "^10.0.0",
+    "matterbridge": "^3.11.1",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.72.1"
   }
 }

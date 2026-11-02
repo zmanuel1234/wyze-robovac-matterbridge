@@ -122,12 +122,7 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
   }
 
   override async onStart(reason: string) {
-    let out : string = '';
-    if( reason ) {
-      out = reason;
-    } else {
-      out = 'none';
-    }
+    const out : string = reason ? reason : 'none';
     this.myLogger(`onStart - RoboVac called with reason = '${out}'`);
 
     // Wait for the platform to start
@@ -288,12 +283,7 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
 
   override async onShutdown(reason?: string) {
     await super.onShutdown(reason);
-    let out : string = '';
-    if( reason ) {
-      out = reason;
-    } else {
-      out = 'none';
-    }
+    const out : string = reason ? reason : 'none';
     this.myLogger(`onShutdown - RoboVac called with reason = '${out}'`);
   }
 
@@ -996,8 +986,7 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
 
   async startStatusLoop() {
     while( true ) {
-      let refreshInterval = 0;
-      refreshInterval = Number(await this.getStatus() );
+      const refreshInterval = Number(await this.getStatus() );
       this.myLogger(`in startStatusLoop(): after getStatus(): refreshInterval = ${refreshInterval} seconds`);
       for( let i = 0; i < refreshInterval; i++ ) {
         if( this.pokeStatusLoop ) {

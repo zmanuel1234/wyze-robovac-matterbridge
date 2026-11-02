@@ -67,3 +67,15 @@ Unofficial security and reliability patch on top of 1.0.1.
 
 - Default check intervals while docked: 60 s while charging (was 120 s) and 300 s when full (was 1800 s). Existing installs keep their saved values; change them in the plugin settings.
 - The vacuum's ID is remembered between checks, saving one Wyze request per check; it is looked up again automatically if it stops working.
+
+## [1.0.1-secure.4] - 2026-11-01
+
+Housekeeping only; the plugin behaves exactly as 1.0.1-secure.3.
+
+### ** Changed **
+
+- Build tooling trimmed from 23 to 6 dev packages: removed jest and its lint plugin (no tests), the prettier/import/jsdoc/n/promise lint plugins, js-yaml, node-ansi-logger, node-persist-manager, npm-check-updates, shx, globals, @eslint/json, the FlatCompat helpers and rimraf.
+- Moved to ESLint 10 with a native flat config (`eslint.config.mjs`); fixed three leftover no-op assignments it flagged.
+- `matterbridge` (^3.11.1) is now a dev dependency, so builds are checked against a real Matterbridge version instead of a hand-made link.
+- The package ships only what the plugin needs (`files` in package.json): compiled code, Python helpers, settings schema, sample config, README, CHANGELOG, LICENSE. No source maps, type declarations or author tooling.
+- Removed the original author's publish script, CODEOWNERS, devcontainer, legacy .eslintrc, unused tsconfig.production.json and donation image.
