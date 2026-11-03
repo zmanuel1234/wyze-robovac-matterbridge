@@ -18,6 +18,7 @@ tokens, count logins and see which commands were sent ("events"). Keys:
 """
 import datetime as _dt
 import json
+import logging
 import os
 import time
 from types import SimpleNamespace as NS
@@ -71,6 +72,8 @@ class _Vacuums:
             d["map_lag"] -= 1
             _save(d)
         rooms = [NS(id=_room_id(current, i), name=r) for i, r in enumerate(_maps(d)[current]["rooms"])]
+        if d.get("sdk_warning"):   # like wyze-sdk's DeviceProp when Wyze sends a value it can't convert
+            logging.getLogger("wyze_sdk.models.devices.base").warning("could not cast value `x` into expected type <class 'int'>")
         return NS(
             mode=VacuumMode[d.get("mode", "IDLE")],
             voltage=d.get("battery", 50),

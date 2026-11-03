@@ -36,6 +36,19 @@ test('status, refused command, unknown command, usage error', async () => {
   assert.match((await w.request('getVacuumStatus', [NICK])).stdout, /:quiet:None:\n$/);
 });
 
+test('a warning logged by wyze-sdk does not turn a successful command into a failure', async () => {
+  const w = worker();
+  W.set({ sdk_warning: true, mode: 'SWEEPING' });
+  const status = await w.request('getVacuumStatus', [NICK]);
+  W.clearEvents();
+  const pause = await w.request('vacuumPauseSweep', [NICK]);
+  W.set({ sdk_warning: false, mode: 'IDLE' });
+  assert.equal(status.ok, true, status.stderr);
+  assert.match(status.stdout, /^VacuumMode.SWEEPING:/);
+  assert.equal(pause.ok, true, pause.stderr);
+  assert.deepEqual(W.events(), ['pause']);
+});
+
 test('rooms are tab-separated, so names may contain ":"', async () => {
   const r = await worker().request('getVacuumFloors', [NICK]);
   assert.deepEqual(r.stdout.trim().split('\n'),

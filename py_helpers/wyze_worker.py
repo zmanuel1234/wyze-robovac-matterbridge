@@ -21,6 +21,7 @@ import contextlib
 import importlib
 import io
 import json
+import logging
 import os
 import sys
 
@@ -71,6 +72,16 @@ def main():
 
     import wyze_auth  # reads the WYZE_* values and removes them from the environment again
     wyze_auth.worker_mode()
+
+    # wyze-sdk logs warnings (e.g. a value from Wyze it can't convert). Without a handler,
+    # Python prints them to whatever sys.stderr is at that moment, which during a command
+    # is the captured error text, so a command that worked would be reported as failed.
+    # This handler is bound to the real stderr now: warnings reach the Matterbridge log
+    # ("Wyze helper: ...") and nothing else.
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter("%(name)s %(levelname)s: %(message)s"))
+    logging.getLogger().addHandler(handler)
+    logging.getLogger().setLevel(logging.WARNING)
 
     while True:
         line = sys.stdin.readline()

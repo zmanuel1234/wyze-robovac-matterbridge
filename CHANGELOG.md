@@ -80,6 +80,12 @@ Housekeeping only; the plugin behaves exactly as 1.0.1-secure.3.
 - The package ships only what the plugin needs (`files` in package.json): compiled code, Python helpers, settings schema, sample config, README, CHANGELOG, LICENSE. No source maps, type declarations or author tooling.
 - Removed the original author's publish script, CODEOWNERS, devcontainer, legacy .eslintrc, unused tsconfig.production.json and donation image.
 
+## [1.1.3] - 2026-11-03
+
+### ** Fixed **
+
+- A warning logged by wyze-sdk during a command (for example when Wyze sends a value it can't convert, which a firmware update can cause) made the command count as failed even though it had worked: a status check was skipped, or Home was told a start, pause or dock had been refused. Such warnings now go to the Matterbridge log as "Wyze helper: ..." lines and no longer affect the result.
+
 ## [1.1.2] - 2026-11-03
 
 ### ** Fixed **
