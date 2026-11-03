@@ -1,5 +1,6 @@
 #!/bin/bash
-# wyze-plugin-update: install the newest GitHub release of matterbridge-wyze-robovac on this Pi.
+# wyze-plugin-update: install the newest GitHub release of matterbridge-wyze-robovac-plus on this Pi.
+# Normally not needed: the plugin is on npm, so the Matterbridge UI offers its updates.
 #
 #   sudo wyze-plugin-update check      what is installed (version, commit) vs. the newest release
 #   sudo wyze-plugin-update            install the newest release if it is newer, then restart Matterbridge
@@ -19,7 +20,7 @@ REPO="zmanuel1234/wyze-robovac-matterbridge"
 TOKEN_FILE="/etc/wyze-plugin-update/token"
 MB_HOME="/opt/matterbridge"
 PREFIX="$MB_HOME/.npm-global"
-PLUGIN_DIR="$PREFIX/lib/node_modules/matterbridge-wyze-robovac"
+PLUGIN_DIR="$PREFIX/lib/node_modules/matterbridge-wyze-robovac-plus"
 BACKUP_DIR="$MB_HOME/plugin-backup"
 NODE_BIN="/opt/node22/bin"
 
@@ -107,12 +108,12 @@ systemctl restart matterbridge
 for _ in $(seq 1 24); do   # up to 2 minutes for the plugin to come up
   sleep 5
   log=$(journalctl -u matterbridge --since "$since" --no-pager -a -o cat | sed 's/\x1b\[[0-9;]*[A-Za-z]//g')
-  if grep -q "Configured plugin matterbridge-wyze-robovac" <<<"$log"; then
+  if grep -q "Configured plugin matterbridge-wyze-robovac-plus" <<<"$log"; then
     grep -E "Initializing platform|Wyze helper started|Vacuum is|Configured plugin" <<<"$log" | tail -5
     echo "Done."
     exit 0
   fi
-  if grep -qE "Failed to (load|start|configure) plugin matterbridge-wyze-robovac|Error parsing plugin matterbridge-wyze-robovac" <<<"$log"; then
+  if grep -qE "Failed to (load|start|configure) plugin matterbridge-wyze-robovac-plus|Error parsing plugin matterbridge-wyze-robovac-plus" <<<"$log"; then
     grep -iE "robovac|error" <<<"$log" | tail -10
     die "Matterbridge did not accept $tag. Go back with: sudo wyze-plugin-update restore $have"
   fi

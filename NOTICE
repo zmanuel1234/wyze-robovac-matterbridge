@@ -1,0 +1,9 @@
+matterbridge-wyze-robovac-plus
+Copyright 2026 Manuel Zamfir
+
+This product is a modified version of matterbridge-wyze-robovac
+(https://github.com/RMCob/matterbridge-wyze-robovac),
+Copyright 2025, 2026 Rob Coben, licensed under the Apache License, Version 2.0.
+
+Changes from the original (from version 1.0.1-secure.1 on) are listed in CHANGELOG.md
+and in the history of https://github.com/zmanuel1234/wyze-robovac-matterbridge.

@@ -1,9 +1,8 @@
 {
-  "name": "matterbridge-wyze-robovac",
-  "version": "1.0.14",
-  "private": true,
-  "description": "Wyze S200 Robot Vacuum (patched)",
-  "author": "RMCob, patched by zmanuel1234",
+  "name": "matterbridge-wyze-robovac-plus",
+  "version": "1.1.0",
+  "description": "Wyze S200 robot vacuum for Matterbridge: rooms, suction modes, faults and secure 2FA login (enhanced fork of matterbridge-wyze-robovac)",
+  "author": "Manuel Zamfir (based on matterbridge-wyze-robovac by Rob Coben)",
   "license": "Apache-2.0",
   "homepage": "https://github.com/zmanuel1234/wyze-robovac-matterbridge#readme",
   "type": "module",
@@ -12,12 +11,13 @@
     "dist/**/*.js",
     "py_helpers/*.py",
     "build-info.json",
-    "matterbridge-wyze-robovac.schema.json",
-    "matterbridge-wyze-robovac.config.json",
+    "matterbridge-wyze-robovac-plus.schema.json",
+    "matterbridge-wyze-robovac-plus.config.json",
     "matterbridge.svg",
     "README.md",
     "CHANGELOG.md",
-    "LICENSE"
+    "LICENSE",
+    "NOTICE"
   ],
   "repository": {
     "type": "git",
@@ -28,12 +28,15 @@
   },
   "keywords": [
     "matterbridge",
+    "matterbridge-plugin",
     "matter",
     "plugin",
     "dynamic",
     "platform",
     "Wyze",
-    "RoboVac"
+    "RoboVac",
+    "S200",
+    "robot vacuum"
   ],
   "engines": {
     "node": ">=22.0.0 <23.0.0 || >=24.0.0 <25.0.0"

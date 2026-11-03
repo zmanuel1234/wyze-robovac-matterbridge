@@ -1,5 +1,5 @@
 """
-Shared Wyze login for the matterbridge-wyze-robovac helper scripts.
+Shared Wyze login for the matterbridge-wyze-robovac-plus helper scripts.
 
 Used two ways: by wyze_worker.py, the long-running helper the plugin talks to,
 and by the individual helper scripts when they are run by hand for testing.

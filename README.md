@@ -1,18 +1,30 @@
-# <img src="matterbridge.svg" alt="Matterbridge Logo" width="64px" height="64px">&nbsp;&nbsp;&nbsp;matterbridge-wyze-robovac
-  
-[![npm](https://img.shields.io/npm/v/matterbridge-wyze-robovac)](https://www.npmjs.com/package/matterbridge-wyze-robovac/v/latest)
-[![npm](https://img.shields.io/npm/dt/matterbridge-wyze-robovac)](https://www.npmjs.com/package/matterbridge-wyze-robovac)
-[![GitHub last commit](https://img.shields.io/github/last-commit/RMCob/matterbridge-wyze-robovac)](https://github.com/RMCob/matterbridge-wyze-robovac)
+# <img src="matterbridge.svg" alt="Matterbridge Logo" width="64px" height="64px">&nbsp;&nbsp;&nbsp;matterbridge-wyze-robovac-plus
+
+[![npm](https://img.shields.io/npm/v/matterbridge-wyze-robovac-plus)](https://www.npmjs.com/package/matterbridge-wyze-robovac-plus)
+[![npm](https://img.shields.io/npm/dt/matterbridge-wyze-robovac-plus)](https://www.npmjs.com/package/matterbridge-wyze-robovac-plus)
 
 ---
 
 Matterbridge plugin to control and report status of the Wyze S200 Robot Vacuum
 
-> **1.0.14** is an unofficial, patched version of the original 1.0.1: secure credential handling, token caching, authenticator-app 2FA, Matterbridge 3.11 support, full vacuum state and fault reporting, and suction modes. See `CHANGELOG.md`. The package is marked private, so the Matterbridge UI no longer offers npm updates for it (they would replace it with the original plugin); updates come from this repository's GitHub releases.
+> An enhanced fork of [matterbridge-wyze-robovac](https://github.com/RMCob/matterbridge-wyze-robovac) by Rob Coben (last released as 1.0.0): secure credential handling, token caching, authenticator-app 2FA, Matterbridge 3.11 support, full vacuum state and fault reporting, suction modes, room refresh and low-battery warnings. See `CHANGELOG.md`. It is published under its own name so the Matterbridge UI installs and updates it normally.
 
 A Robot Vacuum Cleaner device (supported by SmartThings, Alexa, Home Assistant and partially by Apple Home). Read also https://github.com/Luligu/matterbridge/discussions/264. 
 
-Based on the original plugin by Rob Coben: https://github.com/RMCob/matterbridge-wyze-robovac
+Based on the original plugin by Rob Coben: https://github.com/RMCob/matterbridge-wyze-robovac (Apache-2.0; see `NOTICE`).
+
+## Installation
+
+In the Matterbridge UI, install **`matterbridge-wyze-robovac-plus`** (Plugins → Install), or on the command line:
+
+```bash
+npm install -g matterbridge-wyze-robovac-plus
+matterbridge -add matterbridge-wyze-robovac-plus
+```
+
+Then install the Python part (see Requirements) and fill in the settings.
+
+**Coming from `matterbridge-wyze-robovac`?** Remove the old plugin in the Matterbridge UI and install this one. Your settings are under the old plugin's name, so enter them again (or copy `~/.matterbridge/matterbridge-wyze-robovac.config.json` to `matterbridge-wyze-robovac-plus.config.json` and change its `"name"`). Cached Wyze tokens are kept. In server mode (`enableServerRvc`) the vacuum keeps its Matter identity, so Apple Home does not need to pair it again.
 
 ## Requirements
 
@@ -100,9 +112,9 @@ Special thanks to the following projects for reference and inspiration:
 
 Thanks again to [Shaun Tarves](https://github.com/shauntarves/wyze-sdk) for the Python libraries that this plugin utilizes, [Luligu](https://github.com/Luligu/matterbridge) for Matterbridge, and thanks to others for volunteering their time to help fix bugs and add support for other features.
 
-## Updates from GitHub
+## Releases
 
-Releases are built and tested by GitHub Actions: on GitHub, open Actions → Release → Run workflow (or push a tag matching `package.json`'s version, e.g. `v1.0.12`), and `.github/workflows/release.yml` runs the tests, builds the package (with `build-info.json` naming the tag and commit) and attaches it, its `SHA256SUMS` and `tools/pi-update.sh` to a GitHub release. On the Pi, `sudo wyze-plugin-update check` compares the installed package with the newest release and `sudo wyze-plugin-update` installs it. The plugin's first log line shows which release and commit is running.
+Updates are offered in the Matterbridge UI like for any plugin. Each version is also a GitHub release, built and tested by GitHub Actions: on GitHub, open Actions → Release → Run workflow (or push a tag matching `package.json`'s version, e.g. `v1.0.12`), and `.github/workflows/release.yml` runs the tests, builds the package (with `build-info.json` naming the tag and commit) and attaches it, its `SHA256SUMS` and `tools/pi-update.sh` to a GitHub release. The release's `.tgz` is what gets published to npm. `tools/pi-update.sh` (installed as `wyze-plugin-update`) can still install a GitHub release directly, for example to test one before publishing it. The plugin's first log line shows which release and commit is running.
 
 ## Building from source
 

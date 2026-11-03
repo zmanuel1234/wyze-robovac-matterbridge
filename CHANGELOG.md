@@ -1,4 +1,4 @@
-# <img src="matterbridge.svg" alt="Matterbridge Logo" width="64px" height="64px">&nbsp;&nbsp;&nbsp;matterbridge-wyze-robovac
+# <img src="matterbridge.svg" alt="Matterbridge Logo" width="64px" height="64px">&nbsp;&nbsp;&nbsp;matterbridge-wyze-robovac-plus
  
 ## [1.0.0] - 2025-11-22
 
@@ -79,6 +79,20 @@ Housekeeping only; the plugin behaves exactly as 1.0.1-secure.3.
 - `matterbridge` (^3.11.1) is now a dev dependency, so builds are checked against a real Matterbridge version instead of a hand-made link.
 - The package ships only what the plugin needs (`files` in package.json): compiled code, Python helpers, settings schema, sample config, README, CHANGELOG, LICENSE. No source maps, type declarations or author tooling.
 - Removed the original author's publish script, CODEOWNERS, devcontainer, legacy .eslintrc, unused tsconfig.production.json and donation image.
+
+## [1.1.0] - 2026-11-03
+
+First release on npm, under its own name.
+
+### ** Changed **
+
+- Renamed to `matterbridge-wyze-robovac-plus` and published on npm, so the Matterbridge UI installs and updates it like any plugin. The original `matterbridge-wyze-robovac` is unchanged on npm (1.0.0).
+- No longer marked private. Settings files renamed to `matterbridge-wyze-robovac-plus.schema.json` / `.config.json`.
+- Added `NOTICE` crediting the original plugin (Apache-2.0).
+- README: installation and switching from the original plugin.
+- `tools/migrate-to-plus.sh` moves an existing installation (settings, Matterbridge registration) to the new name, with a backup and `--rollback`.
+
+No change to how the vacuum works.
 
 ## [1.0.14] - 2026-11-01
 

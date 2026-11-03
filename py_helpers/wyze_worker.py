@@ -1,5 +1,5 @@
 """
-Long-running helper for matterbridge-wyze-robovac.
+Long-running helper for matterbridge-wyze-robovac-plus.
 
 Starting Python and loading wyze-sdk takes several seconds on a Raspberry Pi, so
 the plugin starts this script once and sends it one request per line instead of

@@ -1,6 +1,6 @@
 {
-  "title": "Matterbridge Wyze RoboVac plugin",
-  "description": "matterbridge-wyze-robovac",
+  "title": "Matterbridge Wyze RoboVac Plus plugin",
+  "description": "matterbridge-wyze-robovac-plus",
   "type": "object",
   "required": [
     "username",

@@ -57,7 +57,7 @@ jobs:
           }, null, 2) + '\n')"
       - run: npm pack   # also checks dependencies, lints and builds (prepack)
       - name: Checksum
-        run: sha256sum matterbridge-wyze-robovac-*.tgz | tee SHA256SUMS
+        run: sha256sum matterbridge-wyze-robovac-plus-*.tgz | tee SHA256SUMS
       - name: Release notes from CHANGELOG.md
         env:
           TAG: ${{ steps.v.outputs.tag }}
@@ -67,5 +67,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.v.outputs.tag }}
         run: >
-          gh release create "$TAG" matterbridge-wyze-robovac-*.tgz SHA256SUMS tools/pi-update.sh
+          gh release create "$TAG" matterbridge-wyze-robovac-plus-*.tgz SHA256SUMS tools/pi-update.sh tools/migrate-to-plus.sh
           --target "$GITHUB_SHA" --title "$TAG" --notes-file notes.md

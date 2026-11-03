@@ -58,7 +58,7 @@ before(async () => {
   for (const lvl of ['info', 'debug', 'notice', 'warn', 'error']) {
     log[lvl] = (...a) => { lines.push(`${lvl}: ${a.map(String).join(' ')}`); };
   }
-  cfg = { name: 'matterbridge-wyze-robovac', type: 'DynamicPlatform', whiteList: [], blackList: [], enableServerRvc: true,
+  cfg = { name: 'matterbridge-wyze-robovac-plus', type: 'DynamicPlatform', whiteList: [], blackList: [], enableServerRvc: true,
     username: 'me', password: 'pw', key_id: 'k', api_key: 'a', totpKey: '', busyStatusCheckRefreshInterval: 45,
     idleStatusCheck1RefreshInterval: 300, idleStatusCheck2RefreshInterval: 60, pythonPath: PYTHON, tokenFile: W.tokenFile,
     path2py_stubs: '/nonexistent', debugLevel: 1 };   // old settings: must be ignored
