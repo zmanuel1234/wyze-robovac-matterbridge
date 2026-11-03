@@ -1,7 +1,7 @@
 {
   "name": "matterbridge-wyze-robovac-plus",
-  "version": "1.1.0",
-  "description": "Wyze S200 robot vacuum for Matterbridge: rooms, suction modes, faults and secure 2FA login (enhanced fork of matterbridge-wyze-robovac)",
+  "version": "1.1.1",
+  "description": "Wyze RoboVac Plus",
   "author": "Manuel Zamfir (based on matterbridge-wyze-robovac by Rob Coben)",
   "license": "Apache-2.0",
   "homepage": "https://github.com/zmanuel1234/wyze-robovac-matterbridge#readme",

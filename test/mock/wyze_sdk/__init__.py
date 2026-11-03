@@ -10,6 +10,8 @@ tokens, count logins and see which commands were sent ("events"). Keys:
   charging, fault,
   suction
   maps                optional [{"name": floor, "rooms": [...]}, ...]
+  current_map         index of the current map (set_current_map changes it)
+  map_lag             info() calls that still report the old map after set_current_map
   hold                seconds devices_list() sleeps (to test timeouts)
   mfa                 "totp" or "sms" to simulate two-factor prompts
   valid_access/_refresh, logins, refreshes, events   kept by the fake itself
@@ -49,6 +51,10 @@ def _maps(d):
     return d.get("maps") or DEFAULT_MAPS
 
 
+def _room_id(map_index, room_index):
+    return 11 + 10 * map_index + room_index
+
+
 class _Vacuums:
     def __init__(self, client):
         self.c = client
@@ -58,8 +64,12 @@ class _Vacuums:
         d = _st()
         if device_mac != VACUUM_MAC:
             raise WyzeApiError("The request to the Wyze API failed.", {"code": 1001, "msg": "bad device"})
-        first = _maps(d)[0]
-        rooms = [NS(id=11 + i, name=r) for i, r in enumerate(first["rooms"])]
+        current = d.get("current_map", 0)
+        if d.get("map_lag"):   # Wyze still reports the previous map for a moment
+            current = d.get("previous_map", current)
+            d["map_lag"] -= 1
+            _save(d)
+        rooms = [NS(id=_room_id(current, i), name=r) for i, r in enumerate(_maps(d)[current]["rooms"])]
         return NS(
             mode=VacuumMode[d.get("mode", "IDLE")],
             voltage=d.get("battery", 50),
@@ -72,12 +82,17 @@ class _Vacuums:
 
     def get_maps(self, device_mac):
         self.c._check()
-        return [NS(id=i + 1, name=m["name"], is_current=(i == 0), rooms=[NS(name=r) for r in m["rooms"]])
-                for i, m in enumerate(_maps(_st()))]
+        d = _st()
+        return [NS(id=i + 1, name=m["name"], is_current=(i == d.get("current_map", 0)),
+                   rooms=[NS(id=_room_id(i, j), name=r) for j, r in enumerate(m["rooms"])])
+                for i, m in enumerate(_maps(d))]
 
     def set_current_map(self, device_mac, map_id):
         self.c._check()
         _log(f"set_map:{map_id}")
+        d = _st()
+        d["previous_map"], d["current_map"] = d.get("current_map", 0), map_id - 1
+        _save(d)
 
     def sweep_rooms(self, device_mac, room_ids):
         self.c._check()

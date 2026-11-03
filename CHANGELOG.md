@@ -80,6 +80,20 @@ Housekeeping only; the plugin behaves exactly as 1.0.1-secure.3.
 - The package ships only what the plugin needs (`files` in package.json): compiled code, Python helpers, settings schema, sample config, README, CHANGELOG, LICENSE. No source maps, type declarations or author tooling.
 - Removed the original author's publish script, CODEOWNERS, devcontainer, legacy .eslintrc, unused tsconfig.production.json and donation image.
 
+## [1.1.1] - 2026-11-03
+
+### ** Fixed **
+
+- Cleaning rooms on another floor: Wyze can keep reporting the previous floor for a few seconds after the plugin switches floors, so the requested rooms weren't found and the whole previous floor could be cleaned instead. The start command now waits up to 15 s for the new floor, and if the rooms still aren't there it starts nothing and Home shows the real state.
+- Room and floor names with spaces at the start or end: they are now trimmed everywhere, so they match between the room list, the floor switch and the start command.
+- An error while updating Home (for example a value Matterbridge refuses) ended the status checks for good; it is now logged and the next check runs as usual.
+- Status-check intervals edited by hand in the config file below the documented minimums (25 s busy, 300 s full, 60 s charging) are raised to them, so Wyze isn't asked too often.
+
+### ** Changed **
+
+- Shorter package description, "Wyze RoboVac Plus", which Matterbridge also uses as the plugin's name in the log.
+- Releases can publish to npm by themselves (npm trusted publishing), once enabled.
+
 ## [1.1.0] - 2026-11-03
 
 First release on npm, under its own name.

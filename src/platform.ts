@@ -296,7 +296,7 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
     await this.applyRooms();
 
     this.pokeStatusLoop = false;
-    this.startStatusLoop();
+    this.startStatusLoop().catch((e) => this.log.error(`Status loop ended: ${e instanceof Error ? e.message : String(e)}`));
   }
 
   override async onConfigure() {
@@ -429,7 +429,7 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
     const r = await this.py('getVacuumStatus.py', [this.nickname]);
     if( !r.ok ) {
       this.log.info(`Status check failed: ${r.stderr}`);
-      return this.statusRefreshInterval || Number(this.config.busyStatusCheckRefreshInterval);
+      return this.statusRefreshInterval || this.interval('busyStatusCheckRefreshInterval');
     }
     // "mode:battery:is_charging:fault:suction", e.g. "VacuumMode.IDLE:87:True:None:quiet"
     const fields = r.stdout.trim().split(':');
@@ -500,11 +500,11 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
     // Fast checks while cleaning, paused, returning, faulted or just after a Home
     // command; slower while docked (charging, then full).
     if( !target || target.busy || fault || Date.now() < this.commandGraceUntil ) {
-      this.statusRefreshInterval = Number(this.config.busyStatusCheckRefreshInterval);
+      this.statusRefreshInterval = this.interval('busyStatusCheckRefreshInterval');
     } else if( this.batteryLevel < 100 ) {
-      this.statusRefreshInterval = Number(this.config.idleStatusCheck2RefreshInterval);
+      this.statusRefreshInterval = this.interval('idleStatusCheck2RefreshInterval');
     } else {
-      this.statusRefreshInterval = Number(this.config.idleStatusCheck1RefreshInterval);
+      this.statusRefreshInterval = this.interval('idleStatusCheck1RefreshInterval');
     }
     if( this.statusRefreshInterval !== this.oldRefreshInterval ) {
       this.log.info(`changing statusRefreshInterval from ${this.oldRefreshInterval} to ${this.statusRefreshInterval} seconds.`);
@@ -692,6 +692,21 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
     return this.batteryLevel <= RoboVacMatterbridgeDynamicPlatform.BATTERY_WARNING ? L.Warning : L.Ok;
   }
 
+  // Seconds between status checks from the settings, with the default and the limits the
+  // settings screen documents also for values edited by hand (Wyze may ignore requests
+  // that come too often).
+  static readonly INTERVALS : Record<string, [number, number, number]> = {   // default, min, max
+    busyStatusCheckRefreshInterval: [45, 25, 3600],
+    idleStatusCheck1RefreshInterval: [300, 300, 3600],
+    idleStatusCheck2RefreshInterval: [60, 60, 3600],
+  };
+
+  interval(key : string) : number {
+    const [def, min, max] = RoboVacMatterbridgeDynamicPlatform.INTERVALS[key];
+    const value = Number(this.config[key]);
+    return Number.isFinite(value) && value > 0 ? Math.min(Math.max(Math.round(value), min), max) : def;
+  }
+
   stateKey(runMode : number, opState : number) : string {
     return `${runMode}:${opState}`;
   }
@@ -810,11 +825,18 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
   async startStatusLoop() {
     while( !this.stopping ) {
       this.pokeStatusLoop = false;
-      const refreshInterval = Number(await this.getStatus()) || 60;   // 60 s if the settings are unusable
-      this.myLogger(`Next status check in ${refreshInterval} s`);
-      if( this.idleOnDock && Date.now() - this.lastRoomRefresh >= RoboVacMatterbridgeDynamicPlatform.ROOM_REFRESH_MS ) {
-        await this.refreshRooms();
+      let refreshInterval = 60;
+      try {
+        refreshInterval = Number(await this.getStatus()) || 60;   // 60 s if the settings are unusable
+        if( this.idleOnDock && Date.now() - this.lastRoomRefresh >= RoboVacMatterbridgeDynamicPlatform.ROOM_REFRESH_MS ) {
+          await this.refreshRooms();
+        }
+      } catch (e) {
+        // For example Matterbridge refusing an attribute value: log it and keep polling,
+        // rather than leaving Home with a state that never updates again.
+        this.log.error(`Status check failed: ${e instanceof Error ? e.message : String(e)}`);
       }
+      this.myLogger(`Next status check in ${refreshInterval} s`);
       for( let i = 0; i < refreshInterval && !this.pokeStatusLoop && !this.stopping; i++ ) {
         await setTimeout(1000);   // a command or shutdown ends the wait early
       }

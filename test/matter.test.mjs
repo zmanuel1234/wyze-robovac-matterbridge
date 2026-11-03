@@ -13,6 +13,10 @@ import { AnsiLogger, LogLevel } from 'matterbridge/logger';
 import initializePlugin from '../dist/index.js';
 import { fakeWyze, PYTHON, sleep } from './setup.mjs';
 
+// Short waits for the floor-switch retry in vacuumStartSweep.py.
+process.env.WYZE_MAP_SWITCH_POLL = '0.2';
+process.env.WYZE_MAP_SWITCH_WAIT = '2';
+
 const W = fakeWyze();
 const S = { Running: 1, Paused: 2, Error: 3, SeekingCharger: 64, Charging: 65, Docked: 66 };
 const CLEAN = { 1: 'Standard', 3: 'Quiet', 4: 'Strong' };
@@ -129,6 +133,44 @@ test('rooms on two floors: one floor is cleaned and the rest is named in a warni
   await p.doSweeping();
   assert.deepEqual(W.events(), ['set_map:1', 'sweep:[11]']);
   assert.ok(lines.some((l) => l.startsWith('warn:') && l.includes("only rooms on 'Main Floor'") && l.endsWith('skipped: Bed')));
+});
+
+test('a room on another floor: switches the floor, then sweeps that floor\'s room', async () => {
+  await poll({ mode: 'IDLE', charging: true });
+  W.set({ current_map: 0 });
+  W.clearEvents();
+  await dev.commandHandler.executeHandler('selectAreas', { request: { newAreas: [6] } });   // Bed, upstairs
+  await p.doSweeping();
+  assert.deepEqual(W.events(), ['set_map:2', 'sweep:[21]']);
+});
+
+test('Wyze reporting the old floor for a moment after the switch: waits, then sweeps the right room', async () => {
+  await poll({ mode: 'IDLE', charging: true });
+  W.set({ current_map: 0, map_lag: 2 });
+  W.clearEvents();
+  await dev.commandHandler.executeHandler('selectAreas', { request: { newAreas: [6] } });
+  await p.doSweeping();
+  assert.deepEqual(W.events(), ['set_map:2', 'sweep:[21]']);
+});
+
+test('rooms that never show up on the current map: nothing is started, Home shows the real state', async () => {
+  await poll({ mode: 'IDLE', charging: true });
+  W.set({ current_map: 0, map_lag: 1000 });
+  W.clearEvents();
+  await dev.commandHandler.executeHandler('selectAreas', { request: { newAreas: [6] } });
+  await p.doSweeping();
+  assert.deepEqual(W.events(), ['set_map:2']);
+  assert.ok(lines.some((l) => l.includes('not on the vacuum\'s current map')), 'the log says why');
+  assert.equal(p.pokeStatusLoop, true);
+  W.set({ map_lag: 0 });
+});
+
+test('intervals: documented limits apply to hand-edited settings', () => {
+  const saved = { ...p.config };
+  Object.assign(p.config, { busyStatusCheckRefreshInterval: 5, idleStatusCheck1RefreshInterval: 99999, idleStatusCheck2RefreshInterval: 'x' });
+  assert.deepEqual([p.interval('busyStatusCheckRefreshInterval'), p.interval('idleStatusCheck1RefreshInterval'),
+    p.interval('idleStatusCheck2RefreshInterval')], [25, 3600, 60]);
+  Object.assign(p.config, saved);
 });
 
 test('dock: handler returns at once, state is not undone by an early poll', async () => {

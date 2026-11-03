@@ -7,6 +7,11 @@ name: Release
 # The tests run first, then the package is built here, with build-info.json recording the
 # tag and commit, and attached to the release with its SHA-256 checksum. The Pi installs
 # these releases with `sudo wyze-plugin-update` (tools/pi-update.sh).
+#
+# The "npm" job then publishes the same package to npm, with npm's trusted publishing
+# (no token stored anywhere). It only runs when the repository variable NPM_PUBLISH is
+# "true", after this repository and release.yml are registered as the package's trusted
+# publisher on npmjs.com (package -> Settings -> Trusted publishing).
 
 on:
   push:
@@ -24,6 +29,8 @@ jobs:
     needs: tests
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.v.outputs.tag }}
     permissions:
       contents: write   # to create the release
     steps:
@@ -69,3 +76,30 @@ jobs:
         run: >
           gh release create "$TAG" matterbridge-wyze-robovac-plus-*.tgz SHA256SUMS tools/pi-update.sh tools/migrate-to-plus.sh
           --target "$GITHUB_SHA" --title "$TAG" --notes-file notes.md
+
+  npm:
+    needs: release
+    if: vars.NPM_PUBLISH == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write   # npm trusted publishing
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - run: npm install -g npm@^11.5.1   # trusted publishing needs npm 11.5.1 or later
+      - name: Download the released package
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.release.outputs.tag }}
+        run: |
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern '*.tgz' --pattern SHA256SUMS
+          sha256sum --check --strict SHA256SUMS
+      - name: Publish to npm
+        env:
+          # Provenance needs a public repository; skip it while this one is private.
+          NPM_CONFIG_PROVENANCE: ${{ github.event.repository.private && 'false' || 'true' }}
+        run: npm publish ./*.tgz --access public
