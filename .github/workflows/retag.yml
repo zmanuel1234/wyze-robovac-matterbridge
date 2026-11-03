@@ -1,0 +1,21 @@
+# One-off: point the 1.1.x release tags at the same commits rewritten with the GitHub
+# noreply email. Removed again right after it has run.
+name: Retag
+on: workflow_dispatch
+permissions:
+  contents: write
+jobs:
+  retag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: |
+          set -e
+          move() { git cat-file -e "$2^{commit}"; git push --force origin "$2:refs/tags/$1"; }
+          move v1.1.0 860ec6318cae7bb62e5796a4c1c474692910218c
+          move v1.1.1 e8de8a4ddc87fdb0e5484d87e30c7b778cc9f9bc
+          move v1.1.2 cc3207673234819b9f0b70b943d59e98144ddfb9
+          move v1.1.3 2a063a47605bb5f368df65557a4e8165229245fb
+          git ls-remote --tags origin 'v1.1.*'
