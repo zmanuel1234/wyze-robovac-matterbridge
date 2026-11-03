@@ -80,6 +80,13 @@ Housekeeping only; the plugin behaves exactly as 1.0.1-secure.3.
 - The package ships only what the plugin needs (`files` in package.json): compiled code, Python helpers, settings schema, sample config, README, CHANGELOG, LICENSE. No source maps, type declarations or author tooling.
 - Removed the original author's publish script, CODEOWNERS, devcontainer, legacy .eslintrc, unused tsconfig.production.json and donation image.
 
+## [1.1.2] - 2026-11-03
+
+### ** Fixed **
+
+- A vacuum that went offline (battery empty, switched off, out of Wi-Fi) kept showing in Home as whatever it was last doing, for example "paused, 12%" while the battery was long dead, because Wyze keeps reporting the last known state. The plugin now reads Wyze's online flag: while the vacuum is offline, Home shows an error ("Vacuum is offline") and the stale battery level isn't applied, the log says once that it went offline and since when, and status checks slow to the full-battery interval (5 min by default). The first check that finds it online again shows the real state and says so in the log.
+- Commands from Home while the vacuum is offline (start, pause, dock, suction) are not sent to Wyze. The plugin checks once more first, in case it has just come back; if it is still offline the command is logged as not sent and Home shows the offline error again.
+
 ## [1.1.1] - 2026-11-03
 
 ### ** Fixed **

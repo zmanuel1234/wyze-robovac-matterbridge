@@ -251,6 +251,52 @@ test('suction level follows the Wyze app; Home choices survive a lagging poll', 
   assert.equal(mode(), 'Standard');
 });
 
+test('offline: Home shows an error instead of the stale state, warned once, slow checks', async () => {
+  p.commandGraceUntil = 0;
+  await poll({ mode: 'IDLE', battery: 40, charging: true, online: true });
+  assert.equal(op(), S.Charging);
+  const before = lines.length;
+  // What Wyze reported on the Pi: the last state before it went (paused, 12%), plus offline.
+  await poll({ mode: 'PAUSE', battery: 12, charging: false, online: false, online_since: 1762149619 });
+  await poll();
+  assert.equal(op(), S.Error);
+  assert.equal(dev.state.rvcOperationalState.operationalError.errorStateId, 1);   // UnableToStartOrResume
+  assert.equal(dev.state.rvcOperationalState.operationalError.errorStateDetails, 'Vacuum is offline');
+  assert.equal(dev.state.powerSource.batPercentRemaining, 80);   // stale 12% not shown
+  assert.equal(p.statusRefreshInterval, 300);
+  const warned = lines.slice(before).filter((l) => l.includes('Vacuum is offline since'));
+  assert.equal(warned.length, 1);
+});
+
+test('offline: commands from Home are not sent, and the error comes back', async () => {
+  W.clearEvents();
+  await dev.commandHandler.executeHandler('RvcOperationalState.pause', { request: {} });
+  await dev.commandHandler.executeHandler('RvcOperationalState.goHome', { request: {} });
+  await dev.commandHandler.executeHandler('RvcCleanMode.changeToMode', { request: { newMode: 4 } });
+  await p.doSweeping();   // what start/resume runs in the background
+  assert.deepEqual(W.events(), []);
+  assert.equal(p.pokeStatusLoop, true);
+  await dev.setAttribute('RvcOperationalState', 'operationalState', S.Running, log);   // what Matterbridge does next
+  await poll();
+  assert.equal(op(), S.Error);
+});
+
+test('offline: back online shows the real state at once and resumes normal checks', async () => {
+  const before = lines.length;
+  await poll({ mode: 'IDLE', battery: 5, charging: true, online: true, online_since: 1762149900 });
+  assert.equal(op(), S.Charging);
+  assert.equal(dev.state.rvcOperationalState.operationalError.errorStateId, 0);
+  assert.equal(dev.state.powerSource.batPercentRemaining, 10);
+  assert.equal(p.statusRefreshInterval, 60);
+  assert.ok(lines.slice(before).some((l) => l.includes('Vacuum is back online')));
+  // A command that finds it offline checks again first: back online, so it is sent.
+  p.offline = true;
+  W.clearEvents();
+  await dev.commandHandler.executeHandler('RvcCleanMode.changeToMode', { request: { newMode: 3 } });
+  assert.deepEqual(W.events().map((e) => e.split(':')[0]), ['suction']);
+  assert.equal(p.offline, false);
+});
+
 test('room list refresh keeps IDs, adds new rooms, drops vanished ones from the selection', async () => {
   W.set({ maps: [{ name: 'Main Floor', rooms: ['Cook Room', 'Living Room', 'Pantry'] }, { name: 'Up: stairs', rooms: ['Bed'] }] });
   p.selectedAreas = [3, 4];

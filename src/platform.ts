@@ -77,6 +77,7 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
   private idleOnDock = false;   // last status check: docked, idle and no fault
   private isDocked = true;
   private fault : string = 'None';   // Wyze fault name from the last status check, e.g. 'COLLISION_EXCEPTION'
+  private offline = false;   // Wyze says the vacuum is not connected (battery dead, switched off, out of Wi-Fi)
   private newRoomsSelected : boolean = false;
 
   private pokeStatusLoop : boolean = false;
@@ -275,6 +276,10 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
         this.log.info(`Unknown clean mode ${request.newMode}; suction left unchanged`);
         return;
       }
+      if( !(await this.ensureOnline(`Suction level ${level}`)) ) {
+        this.suctionGraceUntil = 0;
+        return;
+      }
       this.log.info(`Setting suction level to ${level}`);
       const r = await this.py('vacuumSetSuction.py', [this.nickname, level]);
       if( r.ok ) {
@@ -363,18 +368,24 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
 
   // Resume after a pause.
   async startCleaning() : Promise<boolean> {
-    return this.afterCommand('Resume', await this.py('vacuumStartClean.py', [this.nickname]));
+    return await this.ensureOnline('Resume')
+      && this.afterCommand('Resume', await this.py('vacuumStartClean.py', [this.nickname]));
   }
 
   async pauseSweeping() : Promise<boolean> {
-    return this.afterCommand('Pause', await this.py('vacuumPauseSweep.py', [this.nickname]));
+    return await this.ensureOnline('Pause')
+      && this.afterCommand('Pause', await this.py('vacuumPauseSweep.py', [this.nickname]));
   }
 
   async stopSweeping() : Promise<boolean> {
-    return this.afterCommand('Return to dock', await this.py('vacuumStopSweep.py', [this.nickname]));
+    return await this.ensureOnline('Return to dock')
+      && this.afterCommand('Return to dock', await this.py('vacuumStopSweep.py', [this.nickname]));
   }
 
   async startSweeping() : Promise<boolean> {
+    if( !(await this.ensureOnline('Start cleaning')) ) {
+      return false;
+    }
     const roomNames : string[] = this.selectedAreas
       .map((id) => this.supportedAreas.find((a) => a.areaId === id)?.areaInfo.locationInfo.locationName)
       .filter((name) : name is string => name !== undefined);
@@ -431,8 +442,20 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
       this.log.info(`Status check failed: ${r.stderr}`);
       return this.statusRefreshInterval || this.interval('busyStatusCheckRefreshInterval');
     }
-    // "mode:battery:is_charging:fault:suction", e.g. "VacuumMode.IDLE:87:True:None:quiet"
+    // "mode:battery:is_charging:fault:suction:online:online_since",
+    // e.g. "VacuumMode.IDLE:87:True:None:quiet:True:1762149273"
     const fields = r.stdout.trim().split(':');
+    // While the vacuum is offline Wyze keeps reporting its last known state, which would
+    // show in Home as if it were live. Only an explicit 'False' counts: older helpers and
+    // devices that don't report it are treated as online.
+    if( (fields[5] ?? '').toLowerCase() === 'false' ) {
+      return this.showOffline(Number(fields[6]));
+    }
+    if( this.offline ) {
+      this.offline = false;
+      this.lastAppliedState = '';   // write the real state again below
+      this.log.info('Vacuum is back online');
+    }
     const battery = Number(fields[1]);
     const batteryKnown = fields[1] !== undefined && fields[1] !== '' && Number.isInteger(battery) && battery >= 0 && battery <= 100;
     this.currentStatus = fields[0];
@@ -500,17 +523,72 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
     // Fast checks while cleaning, paused, returning, faulted or just after a Home
     // command; slower while docked (charging, then full).
     if( !target || target.busy || fault || Date.now() < this.commandGraceUntil ) {
-      this.statusRefreshInterval = this.interval('busyStatusCheckRefreshInterval');
+      return this.nextCheckIn(this.interval('busyStatusCheckRefreshInterval'));
     } else if( this.batteryLevel < 100 ) {
-      this.statusRefreshInterval = this.interval('idleStatusCheck2RefreshInterval');
-    } else {
-      this.statusRefreshInterval = this.interval('idleStatusCheck1RefreshInterval');
+      return this.nextCheckIn(this.interval('idleStatusCheck2RefreshInterval'));
     }
+    return this.nextCheckIn(this.interval('idleStatusCheck1RefreshInterval'));
+  }
+
+  private nextCheckIn(seconds : number) : number {
+    this.statusRefreshInterval = seconds;
     if( this.statusRefreshInterval !== this.oldRefreshInterval ) {
       this.log.info(`changing statusRefreshInterval from ${this.oldRefreshInterval} to ${this.statusRefreshInterval} seconds.`);
       this.oldRefreshInterval = this.statusRefreshInterval;
     }
     return this.statusRefreshInterval;
+  }
+
+  /*
+   * The vacuum is offline: say so once in the log and show an error in Home instead of
+   * the last state Wyze knew (for example "paused, 12%" while the battery is long dead).
+   * Matter has no "offline" state for a robot vacuum, so an error is the closest honest
+   * signal. The run mode is left as it was. Checks slow to the long idle interval; the
+   * first check that finds it online again writes the real state.
+   */
+  private async showOffline(since : number) : Promise<number> {
+    if( !this.offline ) {
+      this.offline = true;
+      const when = Number.isFinite(since) && since > 0 ? ` since ${new Date(since * 1000).toLocaleString()}` : '';
+      this.log.warn(`Vacuum is offline${when} (battery empty, switched off or out of Wi-Fi range). ` +
+        'Home shows an error and commands are not sent until it is back.');
+    }
+    this.idleOnDock = false;
+    const key = 'offline';
+    if( this.roboticVacuum && this.lastAppliedState !== key ) {
+      this.lastAppliedState = key;
+      this.commandGraceUntil = 0;
+      await this.roboticVacuum.setAttribute('RvcOperationalState', 'operationalState',
+        RvcOperationalState.OperationalState.Error, this.log);
+      await this.roboticVacuum.setAttribute('RvcOperationalState', 'operationalError',
+        { errorStateId: RvcOperationalState.ErrorState.UnableToStartOrResume, errorStateDetails: 'Vacuum is offline' }, this.log);
+    }
+    return this.nextCheckIn(this.interval('idleStatusCheck1RefreshInterval'));
+  }
+
+  /*
+   * Before sending a command: when the last check found the vacuum offline, check again
+   * (it may have reconnected since) and refuse if it still is. Matterbridge shows the
+   * state it expects once the handler returns, so the status loop then puts the
+   * offline error back straight away.
+   */
+  async ensureOnline(what : string) : Promise<boolean> {
+    if( !this.offline ) {
+      return true;
+    }
+    await this.getStatus();
+    if( !this.offline ) {
+      return true;
+    }
+    this.refuseOffline(what);
+    return false;
+  }
+
+  refuseOffline(what : string) {
+    this.log.info(`${what} not sent: the vacuum is offline`);
+    this.commandGraceUntil = 0;
+    this.lastAppliedState = '';
+    this.pokeStatusLoop = true;
   }
 
   /***************** Find the vacuum and its rooms **********************/
@@ -770,6 +848,10 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
     // Decide between "start a new run" and "resume" on the vacuum's current status,
     // not on the last poll, which can be from before a pause.
     await this.getStatus();
+    if( this.offline ) {
+      this.refuseOffline('Start cleaning');   // that check just found it offline: no floor switch, no start
+      return;
+    }
     let ok : boolean;
     if( this.currentStatus === 'VacuumMode.IDLE' || this.newRoomsSelected ) {
       if( this.selectedAreas.length === 0 ) {

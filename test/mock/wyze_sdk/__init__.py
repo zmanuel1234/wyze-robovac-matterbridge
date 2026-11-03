@@ -16,6 +16,7 @@ tokens, count logins and see which commands were sent ("events"). Keys:
   mfa                 "totp" or "sms" to simulate two-factor prompts
   valid_access/_refresh, logins, refreshes, events   kept by the fake itself
 """
+import datetime as _dt
 import json
 import os
 import time
@@ -78,6 +79,9 @@ class _Vacuums:
             clean_level=NS(name=d["suction"].upper()) if d.get("suction") else None,
             product=NS(model="JA_RO2"),
             current_map=NS(rooms=rooms),
+            # Like wyze-sdk's DeviceProp: absent when the test doesn't set "online"
+            _is_online=None if "online" not in d else NS(
+                value=d["online"], ts=_dt.datetime.fromtimestamp(d.get("online_since", 1700000000))),
         )
 
     def get_maps(self, device_mac):
