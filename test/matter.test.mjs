@@ -85,7 +85,7 @@ after(async () => {
 
 test('device passes strict Matter validation; rooms and floors from Wyze', () => {
   assert.ok(dev, 'device registered');
-  assert.deepEqual(areas(), ['1:*Entire Floor*@1', '2:Kitchen@1', '3:Living Room@1', '4:Den: East@1', '5:*Entire Floor*@2', '6:Bed@2']);
+  assert.deepEqual(areas(), ['1:Kitchen@1', '2:Living Room@1', '3:Den: East@1', '4:Bed@2', '5:Kitchen@2']);   // no "*Entire Floor*" 
   assert.deepEqual(dev.state.serviceArea.supportedMaps.map((m) => m.name), ['Main Floor', 'Up: stairs']);
   assert.equal(cfg.debugLevel, undefined);
   assert.equal(cfg.path2py_stubs, undefined);
@@ -120,7 +120,7 @@ test('a Wyze fault shows as a Home error, but not once docked', async () => {
 test('start cleaning one room, including a name with ":"', async () => {
   await poll({ mode: 'IDLE', battery: 90, charging: true });
   W.clearEvents();
-  await dev.commandHandler.executeHandler('selectAreas', { request: { newAreas: [4] } });
+  await dev.commandHandler.executeHandler('selectAreas', { request: { newAreas: [3] } });
   await p.doSweeping();
   assert.deepEqual(W.events(), ['set_map:1', 'sweep:[13]']);
   assert.deepEqual([op(), runMode()], [S.Running, 2]);
@@ -129,7 +129,7 @@ test('start cleaning one room, including a name with ":"', async () => {
 test('rooms on two floors: one floor is cleaned and the rest is named in a warning', async () => {
   await poll({ mode: 'IDLE', charging: true });
   W.clearEvents();
-  await dev.commandHandler.executeHandler('selectAreas', { request: { newAreas: [2, 6] } });
+  await dev.commandHandler.executeHandler('selectAreas', { request: { newAreas: [1, 4] } });
   await p.doSweeping();
   assert.deepEqual(W.events(), ['set_map:1', 'sweep:[11]']);
   assert.ok(lines.some((l) => l.startsWith('warn:') && l.includes("only rooms on 'Main Floor'") && l.endsWith('skipped: Bed')));
@@ -139,7 +139,7 @@ test('a room on another floor: switches the floor, then sweeps that floor\'s roo
   await poll({ mode: 'IDLE', charging: true });
   W.set({ current_map: 0 });
   W.clearEvents();
-  await dev.commandHandler.executeHandler('selectAreas', { request: { newAreas: [6] } });   // Bed, upstairs
+  await dev.commandHandler.executeHandler('selectAreas', { request: { newAreas: [4] } });   // Bed, upstairs
   await p.doSweeping();
   assert.deepEqual(W.events(), ['set_map:2', 'sweep:[21]']);
 });
@@ -148,7 +148,7 @@ test('Wyze reporting the old floor for a moment after the switch: waits, then sw
   await poll({ mode: 'IDLE', charging: true });
   W.set({ current_map: 0, map_lag: 2 });
   W.clearEvents();
-  await dev.commandHandler.executeHandler('selectAreas', { request: { newAreas: [6] } });
+  await dev.commandHandler.executeHandler('selectAreas', { request: { newAreas: [4] } });
   await p.doSweeping();
   assert.deepEqual(W.events(), ['set_map:2', 'sweep:[21]']);
 });
@@ -157,12 +157,117 @@ test('rooms that never show up on the current map: nothing is started, Home show
   await poll({ mode: 'IDLE', charging: true });
   W.set({ current_map: 0, map_lag: 1000 });
   W.clearEvents();
-  await dev.commandHandler.executeHandler('selectAreas', { request: { newAreas: [6] } });
+  await dev.commandHandler.executeHandler('selectAreas', { request: { newAreas: [4] } });
   await p.doSweeping();
   assert.deepEqual(W.events(), ['set_map:2']);
   assert.ok(lines.some((l) => l.includes('not on the vacuum\'s current map')), 'the log says why');
   assert.equal(p.pokeStatusLoop, true);
   W.set({ map_lag: 0 });
+});
+
+// Run modes for Alexa, which has no room list: one per floor and per room.
+const modes = () => dev.state.rvcRunMode.supportedModes.map((m) => `${m.mode}:${m.label}`);
+const RUN = { dock: 1, clean: 2, mainAll: 10, kitchen: 11, living: 12, den: 13, upAll: 14, bed: 15, upKitchen: 16 };
+async function runModeCommand(newMode, currentMode = 1) {   // as Matterbridge calls it
+  W.clearEvents();
+  await dev.commandHandler.executeHandler('RvcRunMode.changeToMode', { request: { newMode }, attributes: { currentMode } });
+}
+async function sweptOrIdle() {   // the handler starts in the background: wait for the sweep
+  for (let i = 0; i < 100 && !W.events().some((e) => e.startsWith('sweep')); i++) {
+    await sleep(100);
+  }
+  await sleep(300);
+}
+
+test('run modes: Dock, Clean, then Clean All and Clean <room> per floor, numbers saved', () => {
+  assert.deepEqual(modes(), ['1:Dock', '2:Clean', '10:Clean All (Main Floor)', '11:Clean Kitchen (Main Floor)',
+    '12:Clean Living Room', '13:Clean Den: East', '14:Clean All (Up: stairs)', '15:Clean Bed', '16:Clean Kitchen (Up: stairs)']);
+  const tags = dev.state.rvcRunMode.supportedModes.map((m) => m.modeTags.map((t) => t.value).join());
+  assert.deepEqual(tags, ['16384', ...Array(8).fill('16385')]);   // Idle, then Cleaning
+  const saved = JSON.parse(fs.readFileSync(path.join(path.dirname(W.tokenFile), 'run-modes.json'), 'utf8')).modes;
+  assert.equal(saved['Up: stairs\tBed'], RUN.bed);
+  assert.equal(saved['Main Floor\t*Entire Floor*'], RUN.mainAll);
+});
+
+test('run modes: a room keeps its number when rooms are added or reordered', () => {
+  const [rooms, areaIds] = [p.rooms, new Map(p.areaIds)];
+  p.rooms = ['*Entire Floor*\tMain Floor', 'Hall\tMain Floor', 'Den: East\tMain Floor', 'Kitchen\tMain Floor',
+    '*Entire Floor*\tUp: stairs', 'Bed\tUp: stairs'];
+  p.setupSupportedAreas();
+  const m = Object.fromEntries(p.buildRunModes().map((x) => [x.label, x.mode]));
+  assert.deepEqual([m['Clean Kitchen'], m['Clean Den: East'], m['Clean Bed'], m['Clean Hall']], [RUN.kitchen, RUN.den, RUN.bed, 17]);
+  p.rooms = ['*Entire Floor*\tMain Floor', 'Bath\tMain Floor', 'Bath\tMain Floor', 'All\tMain Floor'];   // duplicates
+  p.setupSupportedAreas();
+  assert.deepEqual(p.buildRunModes().map((x) => x.label), ['Dock', 'Clean', 'Clean All', 'Clean Bath']);
+  p.rooms = rooms;   // back to the device's list and area IDs
+  p.areaIds.clear();
+  areaIds.forEach((v, k) => p.areaIds.set(k, v));
+  p.setupSupportedAreas();
+  p.buildRunModes();
+});
+
+test('run mode "Clean <room>" from the dock: switches floor, sweeps that room, shows the mode while cleaning', async () => {
+  Object.assign(p, { commandGraceUntil: 0 });
+  await poll({ mode: 'IDLE', battery: 90, charging: true, current_map: 1 });
+  await runModeCommand(RUN.bed);
+  await sweptOrIdle();
+  assert.deepEqual(W.events(), ['set_map:2', 'sweep:[21]']);
+  assert.deepEqual([op(), runMode()], [S.Running, RUN.bed]);
+  p.commandGraceUntil = 0;
+  await poll({ mode: 'SWEEPING', charging: false });
+  assert.equal(runMode(), RUN.bed, 'still shows "Clean Bed"');
+  await poll({ mode: 'RETURNING_TO_CHARGE' });
+  assert.equal(runMode(), RUN.dock);
+  await poll({ mode: 'SWEEPING' });   // a run started in the Wyze app
+  assert.equal(runMode(), RUN.clean);
+  await poll({ mode: 'IDLE', charging: true });
+});
+
+test('run mode "Clean All" cleans that whole floor; the room with a shared name has its own mode', async () => {
+  p.commandGraceUntil = 0;
+  await poll({ mode: 'IDLE', charging: true, current_map: 0 });
+  await runModeCommand(RUN.upAll);
+  await sweptOrIdle();
+  assert.deepEqual(W.events(), ['set_map:2', 'sweep:[]']);
+  p.commandGraceUntil = 0;
+  await poll({ mode: 'IDLE', charging: true, current_map: 0 });
+  await runModeCommand(RUN.upKitchen);
+  await sweptOrIdle();
+  assert.deepEqual(W.events(), ['set_map:2', 'sweep:[22]']);
+  p.commandGraceUntil = 0;
+  await poll({ mode: 'IDLE', charging: true, current_map: 0 });
+});
+
+test('run modes: another cleaning mode while busy is not started', async () => {
+  await runModeCommand(RUN.kitchen, RUN.bed);
+  await runModeCommand(RUN.clean, RUN.den);
+  await runModeCommand(RUN.den, RUN.clean);
+  await sleep(500);
+  assert.deepEqual(W.events(), []);
+  assert.ok(lines.some((l) => l.includes("'Clean Kitchen (Main Floor)' not started: the vacuum is busy with 'Clean Bed'")));
+});
+
+test('"Clean" uses the rooms picked in Home; all of a floor\'s rooms, or none, clean the whole floor', async () => {
+  p.commandGraceUntil = 0;
+  await poll({ mode: 'IDLE', charging: true, current_map: 0 });
+  await dev.commandHandler.executeHandler('selectAreas', { request: { newAreas: [1, 2, 3] } });
+  await p.doSweeping();
+  assert.deepEqual(W.events().slice(-1), ['sweep:[]']);
+  p.commandGraceUntil = 0;
+  await poll({ mode: 'IDLE', charging: true, current_map: 0 });
+  W.clearEvents();
+  await dev.commandHandler.executeHandler('selectAreas', { request: { newAreas: [] } });
+  await p.doSweeping();
+  assert.deepEqual(W.events(), ['set_map:1', 'sweep:[]']);
+  p.commandGraceUntil = 0;
+  await poll({ mode: 'IDLE', charging: true });
+});
+
+test('a clean-mode change never reaches the run-mode handler', async () => {
+  W.clearEvents();
+  await dev.commandHandler.executeHandler('RvcCleanMode.changeToMode', { request: { newMode: 3 } });   // Quiet
+  assert.deepEqual(W.events().map((e) => e.split(':')[0]), ['suction']);
+  p.suctionGraceUntil = 0;
 });
 
 test('intervals: documented limits apply to hand-edited settings', () => {
@@ -299,11 +404,12 @@ test('offline: back online shows the real state at once and resumes normal check
 
 test('room list refresh keeps IDs, adds new rooms, drops vanished ones from the selection', async () => {
   W.set({ maps: [{ name: 'Main Floor', rooms: ['Cook Room', 'Living Room', 'Pantry'] }, { name: 'Up: stairs', rooms: ['Bed'] }] });
-  p.selectedAreas = [3, 4];
-  await dev.updateAttribute(SERVICE_AREA, 'selectedAreas', [3, 4], log);
+  p.selectedAreas = [2, 3];
+  await dev.updateAttribute(SERVICE_AREA, 'selectedAreas', [2, 3], log);
   await p.refreshRooms();
-  assert.deepEqual(areas(), ['1:*Entire Floor*@1', '7:Cook Room@1', '3:Living Room@1', '8:Pantry@1', '5:*Entire Floor*@2', '6:Bed@2']);
-  assert.deepEqual([...dev.state.serviceArea.selectedAreas], [3]);
+  assert.deepEqual(areas(), ['6:Cook Room@1', '2:Living Room@1', '7:Pantry@1', '4:Bed@2']);
+  assert.deepEqual([...dev.state.serviceArea.selectedAreas], [2]);
+  assert.ok(lines.some((l) => l.includes('reaches the run modes')), 'says Alexa\'s list updates at restart');
   const n = lines.length;
   await p.refreshRooms();
   assert.equal(lines.slice(n).some((l) => l.includes('room list changed')), false);

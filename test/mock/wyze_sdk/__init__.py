@@ -29,7 +29,7 @@ from wyze_sdk.models.devices import VacuumMode
 VACUUM_MAC = "JA_RO2_TEST"
 DEFAULT_MAPS = [
     {"name": "Main Floor", "rooms": ["Kitchen", "Living Room", "Den: East"]},
-    {"name": "Up: stairs", "rooms": ["Bed"]},
+    {"name": "Up: stairs", "rooms": ["Bed", "Kitchen"]},
 ]
 
 

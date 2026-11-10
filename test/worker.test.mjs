@@ -52,7 +52,7 @@ test('a warning logged by wyze-sdk does not turn a successful command into a fai
 test('rooms are tab-separated, so names may contain ":"', async () => {
   const r = await worker().request('getVacuumFloors', [NICK]);
   assert.deepEqual(r.stdout.trim().split('\n'),
-    ['*Entire Floor*\tMain Floor', 'Kitchen\tMain Floor', 'Living Room\tMain Floor', 'Den: East\tMain Floor', '*Entire Floor*\tUp: stairs', 'Bed\tUp: stairs']);
+    ['*Entire Floor*\tMain Floor', 'Kitchen\tMain Floor', 'Living Room\tMain Floor', 'Den: East\tMain Floor', '*Entire Floor*\tUp: stairs', 'Bed\tUp: stairs', 'Kitchen\tUp: stairs']);
 });
 
 test('requests sent together are all answered, in order', async () => {

@@ -80,6 +80,22 @@ Housekeeping only; the plugin behaves exactly as 1.0.1-secure.3.
 - The package ships only what the plugin needs (`files` in package.json): compiled code, Python helpers, settings schema, sample config, README, CHANGELOG, LICENSE. No source maps, type declarations or author tooling.
 - Removed the original author's publish script, CODEOWNERS, devcontainer, legacy .eslintrc, unused tsconfig.production.json and donation image.
 
+## [1.2.0-dev-1] - 2026-11-10
+
+Test version, published under npm's `dev` tag.
+
+### ** Added **
+
+- Run modes for controllers without a room list, such as Alexa, which offers them in routines: **Dock**, **Clean**, **Clean All** per floor and **Clean _room_** per room from the Wyze app ("Clean Kitchen"). A room name used on more than one floor, and "Clean All" with several floors, get the floor in brackets. Each floor and room keeps its number across restarts (`run-modes.json` next to the token cache), so a routine keeps pointing at the same room when rooms are added or reordered.
+- While a run lasts, the vacuum shows the run mode that started it ("Clean Kitchen"); runs started in the Wyze app show as "Clean".
+
+### ** Changed **
+
+- The run modes formerly named "Idle" and "Cleaning" are named "Dock" and "Clean" (same numbers and meaning).
+- The Wyze app's whole-floor entry no longer appears as a room named "\*Entire Floor\*" in Home. Selecting no rooms, or every room on a floor, cleans the whole floor.
+- A different cleaning run mode chosen while the vacuum is busy is logged and not started (Matterbridge refuses that change too); previously only "Cleaning" existed.
+- The run-mode handler is registered for run-mode changes only, so a suction change can never be taken for a run-mode change.
+
 ## [1.1.3] - 2026-11-03
 
 ### ** Fixed **

@@ -8,6 +8,10 @@ name: Release
 # tag and commit, and attached to the release with its SHA-256 checksum. The Pi installs
 # these releases with `sudo wyze-plugin-update` (tools/pi-update.sh).
 #
+# A version with a pre-release part (e.g. 1.2.0-dev-1) becomes a GitHub pre-release and is
+# published under npm's "dev" tag, where the Matterbridge UI looks for a plugin's dev version;
+# "latest" (what everyone else gets) is left alone.
+#
 # The "npm" job then publishes the same package to npm, with npm's trusted publishing
 # (no token stored anywhere). It only runs when the repository variable NPM_PUBLISH is
 # "true", after this repository and release.yml are registered as the package's trusted
@@ -76,6 +80,7 @@ jobs:
         run: >
           gh release create "$TAG" matterbridge-wyze-robovac-plus-*.tgz SHA256SUMS tools/pi-update.sh tools/migrate-to-plus.sh
           --target "$GITHUB_SHA" --title "$TAG" --notes-file notes.md
+          $(case "$TAG" in *-*) echo --prerelease ;; esac)
 
   npm:
     needs: release
@@ -102,4 +107,9 @@ jobs:
         env:
           # Provenance needs a public repository; skip it while this one is private.
           NPM_CONFIG_PROVENANCE: ${{ github.event.repository.private && 'false' || 'true' }}
-        run: npm publish ./*.tgz --access public
+          TAG: ${{ needs.release.outputs.tag }}
+        run: |
+          case "$TAG" in
+            *-*) npm publish ./*.tgz --access public --tag dev ;;   # test version: Matterbridge's dev channel
+            *)   npm publish ./*.tgz --access public ;;
+          esac

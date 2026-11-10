@@ -41,7 +41,8 @@ Then install the Python part (see Requirements) and fill in the settings.
 - Shows Wyze faults as Matter errors while the vacuum is away from the dock: stuck, wheels jammed, lidar blocked, dust bin / water tank / mop missing, failed to find the dock, and so on.
 - Notices when the vacuum is offline (battery empty, switched off, out of Wi-Fi): Home shows an error instead of the last state Wyze knew, commands aren't sent until it is back, and the log says when it went offline and came back.
 - Offers three cleaning modes mapped to the suction levels: Standard, Quiet and Strong (set while the vacuum is docked). A level changed in the Wyze app shows up in Home at the next status check.
-- Offers the rooms and floors from the Wyze app as areas to clean. Changes made in the Wyze app (renamed or new rooms) show up within about 6 hours, checked while the vacuum is docked. Rooms on one floor are cleaned per run; if rooms on several floors are selected, the first room's floor is cleaned and the log says which rooms were skipped.
+- Offers the rooms and floors from the Wyze app as areas to clean. Changes made in the Wyze app (renamed or new rooms) show up within about 6 hours, checked while the vacuum is docked. Rooms on one floor are cleaned per run; if rooms on several floors are selected, the first room's floor is cleaned and the log says which rooms were skipped. Selecting every room on a floor, or none, cleans the whole floor.
+- Offers the same rooms as run modes, for controllers that have no room list (Alexa shows them as options in a routine): **Dock**, **Clean** (the rooms selected in Home, or the whole floor), **Clean All** (the whole floor) and **Clean _room_** for each room, for example "Clean Kitchen". With more than one floor, "Clean All" and room names used on several floors get the floor in brackets. Each floor and room keeps its mode number (saved in `run-modes.json` next to the token cache), so routines keep working when rooms are added in the Wyze app. While a run lasts, the run mode that started it is shown as the vacuum's current mode. A different cleaning mode chosen while the vacuum is busy is not started; send it to the dock first.
 - Reports the battery level and whether it is charging, and tells Home the battery is low at 20 % or less (critically low at 10 %) while the vacuum is away from its dock.
 
 ## Caveats
@@ -50,9 +51,9 @@ Then install the Python part (see Requirements) and fill in the settings.
 
 - One vacuum per Matterbridge instance. With several vacuums, run one instance per vacuum and whitelist one in each (untested).
 
-- The room list is read when the plugin starts. After re-mapping in the Wyze app, restart Matterbridge.
+- The room list is read when the plugin starts. After re-mapping in the Wyze app, restart Matterbridge. Matter fixes a device's list of run modes when it starts, so rooms added or renamed in the Wyze app reach the run modes (Alexa's "Clean _room_") only after a restart, even though Home's room list picks them up on its own.
 
-- All selected rooms should be on the same floor; the plugin switches the Wyze map to the floor of the first selected room. Selecting **\*Entire Floor\*** overrides any other room selection.
+- All selected rooms should be on the same floor; the plugin switches the Wyze map to the floor of the first selected room.
 
 - The status is polled: every 45 s while cleaning, paused or returning, every 60 s while charging and every 5 min when fully charged (all configurable). Wyze may ignore requests if they come too often.
 
@@ -116,6 +117,8 @@ Thanks again to [Shaun Tarves](https://github.com/shauntarves/wyze-sdk) for the 
 ## Releases
 
 Updates are offered in the Matterbridge UI like for any plugin. Each version is also a GitHub release, built and tested by GitHub Actions: on GitHub, open Actions → Release → Run workflow (or push a tag matching `package.json`'s version, e.g. `v1.0.12`), and `.github/workflows/release.yml` runs the tests, builds the package (with `build-info.json` naming the tag and commit) and attaches it, its `SHA256SUMS` and `tools/pi-update.sh` to a GitHub release. The release's `.tgz` is what gets published to npm. `tools/pi-update.sh` (installed as `wyze-plugin-update`) can still install a GitHub release directly, for example to test one before publishing it. The plugin's first log line shows which release and commit is running.
+
+Test versions are numbered like `1.2.0-dev-1` and published to npm under the `dev` tag (and as a GitHub pre-release), which is where the Matterbridge UI looks for a plugin's development version: install it there, or enter `matterbridge-wyze-robovac-plus@dev` as the plugin to install. Once on a dev version, Matterbridge also offers the next one. A normal version (no `-`) goes to `latest` as before.
 
 ## Building from source
 

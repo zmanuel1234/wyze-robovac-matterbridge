@@ -24,7 +24,7 @@ import { MatterbridgeEndpoint, MatterbridgeDynamicPlatform, PlatformConfig } fro
 import { RoboticVacuumCleaner } from 'matterbridge/devices';
 import { AnsiLogger, debugStringify } from 'matterbridge/logger';
 import { RvcRunMode, PowerSource, ServiceArea, RvcOperationalState, RvcCleanMode } from 'matterbridge/matter/clusters';
-import { readFileSync } from 'fs';
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -51,6 +51,17 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
   // How often the room list is read again from Wyze (only while the vacuum is docked
   // and idle), so rooms renamed or added in the Wyze app show up without a restart.
   static readonly ROOM_REFRESH_MS = 6 * 60 * 60 * 1000;
+
+  // Run modes. 1 and 2 are the ones every controller knows; Apple Home starts a clean of
+  // the rooms picked in its room list with 2. Controllers without a room list (Alexa)
+  // get one extra run mode per floor ("Clean All") and per room ("Clean Kitchen"),
+  // numbered from 10 so they can never be mistaken for a clean-mode number (1, 3, 4).
+  static readonly RUN_DOCK = 1;
+  static readonly RUN_CLEAN = 2;
+  static readonly FIRST_TARGET_MODE = 10;
+  static readonly MAX_MODE = 254;
+  // The Wyze room list's whole-floor entry (see getVacuumFloors.py); never shown in Home.
+  static readonly ENTIRE_FLOOR = '*Entire Floor*';
 
   // Oldest Matterbridge this version has been tested with.
   static readonly MIN_MATTERBRIDGE = '3.11.0';
@@ -79,6 +90,12 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
   private fault : string = 'None';   // Wyze fault name from the last status check, e.g. 'COLLISION_EXCEPTION'
   private offline = false;   // Wyze says the vacuum is not connected (battery dead, switched off, out of Wi-Fi)
   private newRoomsSelected : boolean = false;
+
+  // The run modes offered at startup (Matter does not allow the list to change while
+  // running), what each floor/room mode cleans, and the mode the current run used.
+  private runModes : { label: string, mode: number, modeTags: { value: number }[] }[] = [];
+  private readonly modeTargets = new Map<number, { mapId: number, areaId?: number, label: string }>();
+  private activeRunMode : number = RoboVacMatterbridgeDynamicPlatform.RUN_CLEAN;
 
   private pokeStatusLoop : boolean = false;
   private stopping : boolean = false;        // set on shutdown; ends the status loop
@@ -165,6 +182,8 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
     }
 
     await this.getRoomList();
+    this.setupSupportedAreas();
+    this.runModes = this.buildRunModes();
 
     // *********************** Create a vacuum *****************************
     /*
@@ -180,11 +199,8 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
       'Robot Vacuum',
       this.macAddr,
       this.config.enableServerRvc === true ? 'server' : undefined,
-      1, // currentRunMode
-      [
-        { label: 'Idle', mode: 1, modeTags: [{ value: RvcRunMode.ModeTag.Idle }] },
-        { label: 'Cleaning', mode: 2, modeTags: [{ value: RvcRunMode.ModeTag.Cleaning }] },
-      ], // supportedRunModes
+      RoboVacMatterbridgeDynamicPlatform.RUN_DOCK, // currentRunMode
+      this.runModes, // supportedRunModes: Dock, Clean, then one per floor and room
       1, // currentCleanMode
       // Matter requires at least two clean modes. They map to the S200's suction
       // levels. Mode 2 is skipped on purpose: older Matterbridge versions send
@@ -259,13 +275,41 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
       this.myLogger(`'selectAreas' handler called. Selected areas: ${this.selectedAreas?.join(', ')}`);
     });
 
-    this.roboticVacuum.addCommandHandler('changeToMode', async ({ request }) => {
-      this.myLogger(`'changeToMode' handler called - RoboVac. New mode = ${request.newMode}`); // 1 == Idle, 2 == Cleaning
-      if( request.newMode === 2 ) {          // Start vacuuming, or resume if paused
-        this.sweepInBackground();
-      } else if( request.newMode === 1 ) {   // Stop: Matterbridge then shows "returning to dock"
+    // Registered under the cluster's own name, so a clean-mode change can never land here.
+    // Matterbridge runs this before its own checks, then refuses a switch from one
+    // cleaning mode to another while the vacuum is busy; the same is skipped here.
+    this.roboticVacuum.addCommandHandler('RvcRunMode.changeToMode', async ({ request, attributes }) => {
+      const mode = Number(request.newMode);
+      const current = Number((attributes as { currentMode?: number } | undefined)?.currentMode ?? this.currentRunMode());
+      const { RUN_DOCK, RUN_CLEAN } = RoboVacMatterbridgeDynamicPlatform;
+      this.myLogger(`'RvcRunMode.changeToMode' handler called - RoboVac. New mode = ${mode}, current = ${current}`);
+      if( mode === RUN_DOCK ) {   // Matterbridge then shows "returning to dock"
         await this.sendHome();
+        return;
       }
+      if( mode !== current && current !== RUN_DOCK ) {
+        this.log.info(`'${this.modeLabel(mode)}' not started: the vacuum is busy with '${this.modeLabel(current)}'. ` +
+          'Send it to the dock first.');
+        return;
+      }
+      if( mode === RUN_CLEAN ) {   // Start the rooms picked in Home, or resume if paused
+        this.sweepInBackground();
+        return;
+      }
+      const target = this.modeTargets.get(mode);
+      if( !target ) {
+        this.log.info(`Unknown run mode ${mode}; nothing started`);
+        return;
+      }
+      if( mode === current ) {
+        return;   // already doing this; Matterbridge answers "already in requested mode"
+      }
+      if( target.areaId !== undefined && !this.supportedAreas.some((a) => a.areaId === target.areaId) ) {
+        this.log.warn(`'${target.label}' not started: that room is no longer in the Wyze app. ` +
+          'Restart the plugin to update the list of run modes.');
+        return;
+      }
+      this.sweepInBackground(target, mode);
     });
 
     // Matterbridge 3.11+ calls this exact name for clean-mode changes (it only
@@ -343,13 +387,7 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
 
   /***************** SetFloor **********************/
 
-  async setFloor() {
-    // All selected rooms are on the same floor, so the first one decides.
-    let mapId = 1;
-    const firstArea = this.supportedAreas.find((a) => a.areaId === this.selectedAreas[0]);
-    if( this.selectedAreas.length > 0 && firstArea ) {
-      mapId = firstArea.mapId;
-    }
+  async setFloor(mapId : number | undefined) {
     const floorName = this.supportedMaps.find((m) => m.mapId === mapId)?.name;
     if( floorName === undefined ) {
       return;   // no room list from Wyze: clean whichever floor is current
@@ -382,15 +420,16 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
       && this.afterCommand('Return to dock', await this.py('vacuumStopSweep.py', [this.nickname]));
   }
 
-  async startSweeping() : Promise<boolean> {
+  // Start a new run of these rooms on the current floor; no rooms: the whole floor.
+  async startSweeping(roomIds : number[]) : Promise<boolean> {
     if( !(await this.ensureOnline('Start cleaning')) ) {
       return false;
     }
-    const roomNames : string[] = this.selectedAreas
+    const roomNames : string[] = roomIds
       .map((id) => this.supportedAreas.find((a) => a.areaId === id)?.areaInfo.locationInfo.locationName)
       .filter((name) : name is string => name !== undefined);
     if( roomNames.length === 0 ) {
-      roomNames.push('*Entire Floor*');   // matches no room, so the helper cleans the whole floor
+      roomNames.push(RoboVacMatterbridgeDynamicPlatform.ENTIRE_FLOOR);   // matches no room: the helper cleans the whole floor
     }
     this.log.info(`Rooms to be swept = '${roomNames.join(', ')}'`);
     return this.afterCommand('Start cleaning', await this.py('vacuumStartSweep.py', [this.nickname, ...roomNames]));
@@ -498,13 +537,19 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
      */
     const target = this.matterStateFor(this.currentStatus, this.batteryLevel, this.isDocked);
     const fault = target && !target.onDock ? this.matterErrorFor(this.fault) : undefined;
+    const inGrace = Date.now() < this.commandGraceUntil;
+    if( target && target.runMode === RoboVacMatterbridgeDynamicPlatform.RUN_DOCK && !inGrace ) {
+      this.activeRunMode = RoboVacMatterbridgeDynamicPlatform.RUN_CLEAN;   // the run is over
+    }
     if( target && this.roboticVacuum ) {
+      // While cleaning, the run mode that started it ("Clean Kitchen"); runs started in
+      // the Wyze app show as "Clean".
+      const runMode = target.runMode === RoboVacMatterbridgeDynamicPlatform.RUN_DOCK ? target.runMode : this.activeRunMode;
       const opState = fault ? RvcOperationalState.OperationalState.Error : target.opState;
-      const key = this.stateKey(target.runMode, opState) + (fault ? `:${fault.id}` : '');
-      const inGrace = Date.now() < this.commandGraceUntil;
+      const key = this.stateKey(runMode, opState) + (fault ? `:${fault.id}` : '');
       if( key !== this.lastAppliedState && !inGrace ) {
         this.lastAppliedState = key;
-        await this.roboticVacuum.setAttribute('RvcRunMode', 'currentMode', target.runMode, this.log);
+        await this.roboticVacuum.setAttribute('RvcRunMode', 'currentMode', runMode, this.log);
         await this.roboticVacuum.setAttribute('RvcOperationalState', 'operationalState', opState, this.log);
         await this.roboticVacuum.setAttribute('RvcOperationalState', 'operationalError', fault
           ? { errorStateId: fault.id, errorStateDetails: fault.details }
@@ -634,6 +679,9 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
     this.log.info('The room list changed in the Wyze app; updating Home: ' +
       this.supportedAreas.map((a) => a.areaInfo.locationInfo.locationName).join(', '));
     await this.applyRooms(false);
+    // Matter fixes the run-mode list when the device starts, so rooms added or renamed
+    // in Wyze reach Alexa's "Clean <room>" list at the next plugin restart.
+    this.log.notice('The new room list reaches the run modes (Alexa\'s "Clean <room>") when the plugin restarts');
   }
 
   // Build the areas from this.rooms (unless already built) and send them to Home.
@@ -813,6 +861,9 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
       if( !maps.some((m) => m.mapId === mapId) ) {
         maps.push({ mapId, name: floorName });
       }
+      if( roomName === RoboVacMatterbridgeDynamicPlatform.ENTIRE_FLOOR ) {
+        continue;   // the floor itself: picking no rooms (or all of them) cleans it
+      }
       const key = `${floorName}\t${roomName}`;
       let areaId = this.areaIds.get(key);
       if( areaId === undefined ) {
@@ -832,17 +883,158 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
     this.supportedAreas = areas;
   }
 
+  /*
+   * Run modes for controllers without a room list (Alexa): Dock, Clean (the rooms picked
+   * in Home, or the whole floor), then "Clean All" per floor and "Clean <room>" per room,
+   * from the areas set up by setupSupportedAreas. A room whose name is on more than one
+   * floor, and "Clean All" when there is more than one floor, get the floor in brackets.
+   * Numbers are kept per floor/room name in run-modes.json, so a routine that uses
+   * "Clean Kitchen" keeps working when rooms are added or reordered in the Wyze app.
+   */
+  buildRunModes() : { label: string, mode: number, modeTags: { value: number }[] }[] {
+    const C = RoboVacMatterbridgeDynamicPlatform;
+    const modes = [
+      { label: 'Dock', mode: C.RUN_DOCK, modeTags: [{ value: RvcRunMode.ModeTag.Idle }] },
+      { label: 'Clean', mode: C.RUN_CLEAN, modeTags: [{ value: RvcRunMode.ModeTag.Cleaning }] },
+    ];
+    this.modeTargets.clear();
+    const saved = this.readRunModeNumbers();
+    const used = new Set(Object.values(saved));
+    const numberFor = (key : string) : number | undefined => {
+      if( saved[key] === undefined ) {
+        let n = C.FIRST_TARGET_MODE;
+        while( used.has(n) && n <= C.MAX_MODE ) {
+          n++;
+        }
+        if( n > C.MAX_MODE ) {
+          return undefined;
+        }
+        saved[key] = n;
+        used.add(n);
+      }
+      return saved[key];
+    };
+    const floorSuffix = (mapId : number) => ` (${this.supportedMaps.find((m) => m.mapId === mapId)?.name ?? ''})`;
+    const label = (text : string) => text.slice(0, 64);   // Matter's limit for a mode label
+    for (const map of this.supportedMaps) {
+      const targets : { key : string, label : string, areaId? : number }[] = [{
+        key: `${map.name}\t${C.ENTIRE_FLOOR}`,
+        label: label('Clean All' + (this.supportedMaps.length > 1 ? floorSuffix(map.mapId) : '')),
+      }];
+      for (const area of this.supportedAreas.filter((a) => a.mapId === map.mapId)) {
+        const name = area.areaInfo.locationInfo.locationName;
+        const shared = this.supportedAreas.some((a) => a.mapId !== map.mapId && a.areaInfo.locationInfo.locationName === name);
+        targets.push({ key: `${map.name}\t${name}`, label: label(`Clean ${name}` + (shared ? floorSuffix(map.mapId) : '')),
+          areaId: area.areaId });
+      }
+      for (const t of targets) {
+        const mode = numberFor(t.key);
+        if( mode === undefined ) {
+          this.log.warn(`Too many rooms for run modes; '${t.label}' is not offered`);
+          continue;
+        }
+        // Two rooms with the same name on one floor (or a room called "All"): Matter
+        // needs distinct modes, so only the first is offered; Home's room list has both.
+        if( modes.some((m) => m.mode === mode || m.label === t.label) ) {
+          this.log.warn(`Run mode '${t.label}' is offered only once; rename the duplicate room in the Wyze app to get both`);
+          continue;
+        }
+        modes.push({ label: t.label, mode, modeTags: [{ value: RvcRunMode.ModeTag.Cleaning }] });
+        this.modeTargets.set(mode, { mapId: map.mapId, areaId: t.areaId, label: t.label });
+      }
+    }
+    this.saveRunModeNumbers(saved);
+    if( this.modeTargets.size > 0 ) {
+      this.log.info(`Run modes: ${modes.map((m) => m.label).join(', ')}`);
+    }
+    return modes;
+  }
+
+  // Next to the token cache: ~/.matterbridge/wyze-robovac/run-modes.json by default.
+  runModeFile() : string {
+    return path.join(path.dirname(this.tokenFile()), 'run-modes.json');
+  }
+
+  readRunModeNumbers() : Record<string, number> {
+    try {
+      const data = JSON.parse(readFileSync(this.runModeFile(), 'utf8'));
+      const out : Record<string, number> = {};
+      const seen = new Set<number>();   // a number used twice (hand edit) keeps only its first room
+      for (const [k, v] of Object.entries(data?.modes ?? {})) {
+        if( Number.isInteger(v) && Number(v) >= RoboVacMatterbridgeDynamicPlatform.FIRST_TARGET_MODE
+            && Number(v) <= RoboVacMatterbridgeDynamicPlatform.MAX_MODE && !seen.has(Number(v)) ) {
+          out[k] = Number(v);
+          seen.add(Number(v));
+        }
+      }
+      return out;
+    } catch {
+      return {};   // first start, or an unreadable file: numbers are handed out afresh
+    }
+  }
+
+  saveRunModeNumbers(modes : Record<string, number>) {
+    const file = this.runModeFile();
+    try {
+      mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+      writeFileSync(`${file}.tmp`, JSON.stringify({ modes }, null, 2) + '\n');
+      renameSync(`${file}.tmp`, file);
+    } catch (e) {
+      this.log.info(`Could not save the run-mode numbers (${e instanceof Error ? e.message : String(e)}); ` +
+        'they may change at the next restart');
+    }
+  }
+
+  // The current run mode as Matterbridge holds it.
+  currentRunMode() : number {
+    const state = (this.roboticVacuum as unknown as { state?: { rvcRunMode?: { currentMode?: number } } } | undefined)?.state;
+    return Number(state?.rvcRunMode?.currentMode ?? RoboVacMatterbridgeDynamicPlatform.RUN_DOCK);
+  }
+
+  modeLabel(mode : number) : string {
+    return this.runModes.find((m) => m.mode === mode)?.label ?? `mode ${mode}`;
+  }
+
   areaName(id : number) : string {
     return this.supportedAreas.find((a) => a.areaId === id)?.areaInfo.locationInfo.locationName ?? `area ${id}`;
   }
 
   // Start or resume from a Home command without holding the command up: picking the
   // floor and starting takes Wyze 20-30 s, longer than the Home app waits for a reply.
-  sweepInBackground() {
-    this.doSweeping().catch((e) => this.log.error(`Start/resume failed: ${e instanceof Error ? e.message : String(e)}`));
+  // target: a floor/room run mode's floor and room; without one, the rooms picked in Home.
+  sweepInBackground(target? : { mapId : number, areaId? : number, label : string },
+    mode : number = RoboVacMatterbridgeDynamicPlatform.RUN_CLEAN) {
+    this.doSweeping(target, mode).catch((e) => this.log.error(`Start/resume failed: ${e instanceof Error ? e.message : String(e)}`));
   }
 
-  async doSweeping() {
+  // The floor and rooms for a run of the rooms picked in Home. One floor per run: rooms on
+  // other floors are left out (and named in a warning). No rooms picked, or every room
+  // of the floor: the whole floor, which also covers the space between rooms.
+  roomsToClean(picked : number[]) : { mapId : number | undefined, roomIds : number[] } {
+    const mapOf = (id : number) => this.supportedAreas.find((a) => a.areaId === id)?.mapId;
+    const known = picked.filter((id) => mapOf(id) !== undefined);
+    if( known.length === 0 ) {
+      this.log.info('No rooms selected; cleaning the entire first floor');
+      return { mapId: this.supportedMaps[0]?.mapId, roomIds: [] };
+    }
+    const mapId = mapOf(known[0]);
+    const skipped = known.filter((id) => mapOf(id) !== mapId);
+    if( skipped.length > 0 ) {
+      const floorName = this.supportedMaps.find((m) => m.mapId === mapId)?.name ?? '';
+      this.log.warn('Rooms on more than one floor were selected. The vacuum cleans one floor per run, so only ' +
+        `rooms on '${floorName}' are cleaned now; skipped: ${skipped.map((id) => this.areaName(id)).join(', ')}`);
+    }
+    const roomIds = known.filter((id) => mapOf(id) === mapId);
+    const floorRooms = this.supportedAreas.filter((a) => a.mapId === mapId).map((a) => a.areaId);
+    if( floorRooms.every((id) => roomIds.includes(id)) ) {
+      this.log.info('Every room on the floor is selected; cleaning the entire floor');
+      return { mapId, roomIds: [] };
+    }
+    return { mapId, roomIds };
+  }
+
+  async doSweeping(target? : { mapId : number, areaId? : number, label : string },
+    mode : number = RoboVacMatterbridgeDynamicPlatform.RUN_CLEAN) {
     // Polls during the next steps must not undo the "cleaning" Matterbridge just showed.
     this.commandGraceUntil = Date.now() + RoboVacMatterbridgeDynamicPlatform.COMMAND_GRACE_MS;
     // Decide between "start a new run" and "resume" on the vacuum's current status,
@@ -853,49 +1045,37 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
       return;
     }
     let ok : boolean;
-    if( this.currentStatus === 'VacuumMode.IDLE' || this.newRoomsSelected ) {
-      if( this.selectedAreas.length === 0 ) {
-        // No rooms selected: the first floor's "*Entire Floor*" (or the default area).
-        const first = this.supportedAreas.find((a) => a.areaInfo.locationInfo.locationName === '*Entire Floor*');
-        this.selectedAreas.push( first?.areaId ?? 1 );
-        this.log.info('No rooms selected; cleaning the entire first floor');
+    let roomIds : number[] = [];
+    const newRun = target !== undefined || this.currentStatus === 'VacuumMode.IDLE' || this.newRoomsSelected;
+    if( newRun ) {
+      // A floor/room run mode cleans what it names; otherwise the rooms picked in Home.
+      const plan = target
+        ? { mapId: target.mapId, roomIds: target.areaId !== undefined ? [target.areaId] : [] }
+        : this.roomsToClean(this.selectedAreas);
+      if( target ) {
+        this.log.info(`Run mode '${target.label}'`);
       }
-      // The vacuum cleans one floor per run: keep the rooms on the floor of the first
-      // selected room and say which were left out.
-      const mapOf = (id : number) => this.supportedAreas.find((a) => a.areaId === id)?.mapId;
-      const floor = mapOf(this.selectedAreas[0]);
-      const skipped = this.selectedAreas.filter((id) => mapOf(id) !== floor);
-      if( floor !== undefined && skipped.length > 0 ) {
-        const floorName = this.supportedMaps.find((m) => m.mapId === floor)?.name ?? '';
-        this.log.warn('Rooms on more than one floor were selected. The vacuum cleans one floor per run, so only ' +
-          `rooms on '${floorName}' are cleaned now; skipped: ${skipped.map((id) => this.areaName(id)).join(', ')}`);
-        this.selectedAreas = this.selectedAreas.filter((id) => mapOf(id) === floor);
-      }
-      // "*Entire Floor*" selected together with rooms: clean the whole floor.
-      const entireFloor = this.selectedAreas
-        .map((id) => this.supportedAreas.find((a) => a.areaId === id))
-        .find((a) => a?.areaInfo.locationInfo.locationName === '*Entire Floor*');
-      if( entireFloor && this.selectedAreas.length > 1 ) {
-        this.selectedAreas = [entireFloor.areaId];
-        this.log.info('Changing selected room(s) to be "*Entire Floor*"');
-      }
+      roomIds = plan.roomIds;
       this.newRoomsSelected = false;
-      await this.setFloor();          // Set current floor based on what rooms were selected
-      ok = await this.startSweeping();
+      await this.setFloor(plan.mapId);
+      ok = await this.startSweeping(roomIds);
     } else {
       ok = await this.startCleaning();   // Resume cleaning after a pause
     }
     if( !ok ) {
       return;   // afterCommand has the status loop show the real state
     }
+    if( newRun ) {
+      this.activeRunMode = mode;   // not a resume: show this run's mode while it lasts
+    }
     if( this.roboticVacuum ) {
-      await this.roboticVacuum.setAttribute('RvcRunMode', 'currentMode', 2, this.log); // Cleaning
+      await this.roboticVacuum.setAttribute('RvcRunMode', 'currentMode', this.activeRunMode, this.log);
       await this.roboticVacuum.setAttribute('RvcOperationalState', 'operationalState',
         RvcOperationalState.OperationalState.Running, this.log);
       await this.roboticVacuum.setAttribute('RvcOperationalState', 'operationalError',
         { errorStateId: RvcOperationalState.ErrorState.NoError }, this.log);
-      await this.roboticVacuum.updateAttribute(ServiceArea.Cluster.id, 'currentArea', this.selectedAreas[0], this.log);
-      this.lastAppliedState = this.stateKey(2, RvcOperationalState.OperationalState.Running);
+      await this.roboticVacuum.updateAttribute(ServiceArea.Cluster.id, 'currentArea', roomIds[0] ?? null, this.log);
+      this.lastAppliedState = this.stateKey(this.activeRunMode, RvcOperationalState.OperationalState.Running);
     }
     // Check the vacuum's status now and then on the fast interval. (The original
     // version waited here in a loop that could spin without pausing, freezing the
