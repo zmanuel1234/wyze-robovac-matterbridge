@@ -28,7 +28,7 @@ Then install the Python part (see Requirements) and fill in the settings.
 
 ## Requirements
 
-- Python 3.9 or newer, with wyze-sdk ≥ 2.2.0 installed, ideally in its own virtual environment ([wyze-sdk](https://github.com/shauntarves/wyze-sdk)). Tested with wyze-sdk 2.2.0 on Python 3.9 (Raspberry Pi OS 11) and 3.11. Python 3.12+ installs a newer wyze-sdk with the same login and vacuum code.
+- Python 3.9 or newer, with wyze-sdk ≥ 2.2.0 installed, ideally in its own virtual environment ([wyze-sdk](https://github.com/shauntarves/wyze-sdk)). Tested (in CI) with wyze-sdk 2.2.0 on Python 3.9, as on Raspberry Pi OS 11, and with the newest wyze-sdk on Python 3.12, which has the same login and vacuum code.
 - Matterbridge ≥ 3.11 ([installation](https://github.com/Luligu/matterbridge/blob/main/README.md)). Earlier releases of this plugin do not start on Matterbridge 3.11.
 - A Wyze API key ID and API key from the [Wyze developer console](https://developer-api-console.wyze.com/#/apikey/view). Any characters are fine; they are never passed through a shell.
 - If your Wyze account uses two-factor authentication, it must use an authenticator app (not SMS), and you need its setup key (see `totpKey` below).
@@ -39,7 +39,8 @@ Then install the Python part (see Requirements) and fill in the settings.
 - Exposes the S200 as a Matter robot vacuum with the rooms and floors from the Wyze app, so Home can clean selected rooms, pause, resume and send it to the dock.
 - Shows the vacuum's real state, including runs started from the Wyze app, a schedule or the button: cleaning, paused, returning to the dock, charging (also "charging, will resume") and docked.
 - Shows Wyze faults as Matter errors while the vacuum is away from the dock: stuck, wheels jammed, lidar blocked, dust bin / water tank / mop missing, failed to find the dock, and so on.
-- Notices when the vacuum is offline (battery empty, switched off, out of Wi-Fi): Home shows an error instead of the last state Wyze knew, commands aren't sent until it is back, and the log says when it went offline and came back.
+- Notices when the vacuum is offline (battery empty, switched off, out of Wi-Fi): Home shows an error instead of the last state Wyze knew, commands aren't sent until it is back, and the log says when it went offline and came back. When Wyze itself doesn't answer three status checks in a row, Home shows a "Wyze cloud not reachable" error until it does.
+- Starts even when Wyze can't be reached while the Pi boots, using the vacuum found last time; the room list is read as soon as Wyze answers.
 - Offers three cleaning modes mapped to the suction levels: Standard, Quiet and Strong (set while the vacuum is docked). A level changed in the Wyze app shows up in Home at the next status check.
 - Offers the rooms and floors from the Wyze app as areas to clean. Changes made in the Wyze app (renamed or new rooms) show up within about 6 hours, checked while the vacuum is docked. Rooms on one floor are cleaned per run; if rooms on several floors are selected, the first room's floor is cleaned and the log says which rooms were skipped. Selecting every room on a floor, or none, cleans the whole floor.
 - Offers the same rooms as run modes, for controllers that have no room list (Alexa shows them as options in a routine): **Dock**, **Clean** (the rooms selected in Home, or the whole floor), **Clean All** (the whole floor) and **Clean _room_** for each room, for example "Clean Kitchen". With more than one floor, "Clean All" and room names used on several floors get the floor in brackets. Each floor and room keeps its mode number (saved in `run-modes.json` next to the token cache), so routines keep working when rooms are added in the Wyze app. If the room list can't be read when the plugin starts, the saved room modes are still listed but only log a warning until the next restart. While a run lasts, the run mode that started it is shown as the vacuum's current mode. A different cleaning mode chosen while the vacuum is busy is not started; send it to the dock first. Choosing the mode already shown while paused resumes.
@@ -51,7 +52,7 @@ Then install the Python part (see Requirements) and fill in the settings.
 
 - One vacuum per Matterbridge instance. With several vacuums, run one instance per vacuum and whitelist one in each (untested).
 
-- The room list is read when the plugin starts. After re-mapping in the Wyze app, restart Matterbridge. Matter fixes a device's list of run modes when it starts, so rooms added or renamed in the Wyze app reach the run modes (Alexa's "Clean _room_") only after a restart, even though Home's room list picks them up on its own.
+- The room list is read when the plugin starts and again every 6 hours while the vacuum is docked (every 5 minutes while it couldn't be read yet), so Home picks up rooms renamed or added in the Wyze app on its own; restart Matterbridge to see them at once. Matter fixes a device's list of run modes when it starts, so rooms added or renamed in the Wyze app reach the run modes (Alexa's "Clean _room_") only after a restart, even though Home's room list picks them up on its own.
 
 - All selected rooms should be on the same floor; the plugin switches the Wyze map to the floor of the first selected room.
 
@@ -63,26 +64,25 @@ Then install the Python part (see Requirements) and fill in the settings.
 
 ## Configuration
 
-Use the settings UI in Matterbridge browser interface to configure your Wyze account information, or manually add the following to the platforms section of your config file. See the **`Requirements`** section above for instructions on how to get your API_KEY and KEY_ID:
+Use the plugin's settings in the Matterbridge browser interface to enter your Wyze account information. Matterbridge keeps them in the plugin's own config file, `~/.matterbridge/matterbridge-wyze-robovac-plus.config.json` in the home folder of the user Matterbridge runs as, which you can also edit by hand while Matterbridge is stopped. See the **`Requirements`** section above for how to get your API_KEY and KEY_ID:
 
 ```
 {
-  "platforms": [
-    {
-      "platform": "WyzeRoboVac",
-      "name": "WyzeRoboVac",
-      "username": "YOUR_EMAIL",
-      "password": "YOUR_PASSWORD",
-      "key_id": "YOUR WYZE ACCOUNT KEY_ID",
-      "api_key": "YOUR WYZE ACCOUNT API_KEY",
-      "totpKey": "AUTHENTICATOR SETUP SEED (only if 2FA uses an authenticator app)",
-      "busyStatusCheckRefreshInterval": 45,
-      "idleStatusCheck1RefreshInterval": 300,
-      "idleStatusCheck2RefreshInterval": 60,
-      "pythonPath": "/opt/wyze-venv/bin/python",
-      "tokenFile": ""
-    }
-  ]
+  "name": "matterbridge-wyze-robovac-plus",
+  "type": "DynamicPlatform",
+  "whiteList": [],
+  "blackList": [],
+  "enableServerRvc": true,
+  "username": "YOUR_EMAIL",
+  "password": "YOUR_PASSWORD",
+  "key_id": "YOUR WYZE ACCOUNT KEY_ID",
+  "api_key": "YOUR WYZE ACCOUNT API_KEY",
+  "totpKey": "AUTHENTICATOR SETUP SEED (only if 2FA uses an authenticator app)",
+  "busyStatusCheckRefreshInterval": 45,
+  "idleStatusCheck1RefreshInterval": 300,
+  "idleStatusCheck2RefreshInterval": 60,
+  "pythonPath": "/opt/wyze-venv/bin/python",
+  "tokenFile": ""
 }
 ```
 
@@ -90,10 +90,10 @@ Use the settings UI in Matterbridge browser interface to configure your Wyze acc
 
 - **`totpKey`** – Only if your Wyze account uses an authenticator app for two-factor authentication. This is the secret key shown when you set up the app (the text behind the QR code), not a 6-digit code. It is used only when the plugin has to log in from scratch. SMS two-factor authentication cannot be used unattended.
 - **`pythonPath`** – The Python interpreter that has `wyze-sdk` installed, e.g. the `python` inside a virtual environment. Defaults to `python3`.
-- **`tokenFile`** – Where Wyze access/refresh tokens are cached (owner-only permissions). Defaults to `~/.matterbridge/wyze-robovac/tokens.json`.
-- **`busyStatusCheckRefreshInterval`** – Seconds between status checks while the vacuum is cleaning, paused or returning to the dock. Defaults to 45 (minimum 25).
+- **`tokenFile`** – Where Wyze access/refresh tokens are cached (owner-only file). Defaults to `~/.matterbridge/wyze-robovac/tokens.json`. The plugin keeps a few small files next to it: the vacuum found last time (`vacuum.json`, used when Wyze can't be reached at startup) and the run-mode numbers (`run-modes.json`). A folder the plugin creates, or its own `wyze-robovac` folder, is made owner-only; an existing folder you name is left as it is.
+- **`busyStatusCheckRefreshInterval`** – Seconds between status checks while the vacuum is cleaning, paused or returning to the dock. Defaults to 45 (minimum 25, maximum 3600).
 - **`idleStatusCheck1RefreshInterval`** – Seconds between status checks when docked with a full battery, and while the vacuum is offline. Defaults to 300 (5 min, the minimum). This is also how quickly a run started outside Home shows up.
-- **`idleStatusCheck2RefreshInterval`** – Seconds between status checks when docked and charging. Defaults to 60 (1 min, the minimum).
+- **`idleStatusCheck2RefreshInterval`** – Seconds between status checks when docked and charging. Defaults to 60 (1 min, the minimum; maximum 3600).
 
 For troubleshooting detail, set Matterbridge's own log level to Debug. (The old `debugLevel` and `path2py_stubs` settings are gone and are ignored if still present.)
 
@@ -118,7 +118,9 @@ Thanks again to [Shaun Tarves](https://github.com/shauntarves/wyze-sdk) for the 
 
 Updates are offered in the Matterbridge UI like for any plugin. Each version is also a GitHub release, built and tested by GitHub Actions: on GitHub, open Actions → Release → Run workflow (or push a tag matching `package.json`'s version, e.g. `v1.0.12`), and `.github/workflows/release.yml` runs the tests, builds the package (with `build-info.json` naming the tag and commit) and attaches it, its `SHA256SUMS` and `tools/pi-update.sh` to a GitHub release. The release's `.tgz` is what gets published to npm. `tools/pi-update.sh` (installed as `wyze-plugin-update`) can still install a GitHub release directly, for example to test one before publishing it. The plugin's first log line shows which release and commit is running.
 
-Test versions are numbered like `1.2.0-dev-1` and published to npm under the `dev` tag (and as a GitHub pre-release), which is where the Matterbridge UI looks for a plugin's development version: install it there, or enter `matterbridge-wyze-robovac-plus@dev` as the plugin to install. Once on a dev version, Matterbridge also offers the next one. A normal version (no `-`) goes to `latest` as before.
+The `SHA256SUMS` file comes from the same release, so it shows the download arrived intact, not who built it; the release and the npm package (with provenance) are built by GitHub Actions from the tagged commit.
+
+Test versions are numbered like `1.2.0-dev-1` and published to npm under the `dev` tag (and as a GitHub pre-release), which is where the Matterbridge UI looks for a plugin's development version: install it there, or enter `matterbridge-wyze-robovac-plus@dev` as the plugin to install. Once on a dev version, Matterbridge also offers the next one. A normal version (no `-`) goes to `latest` as before; other pre-release numbers (e.g. `1.2.0-rc.1`) go to `next`. `wyze-plugin-update` does not treat an older release as an update of a newer test version: to go back, send the vacuum to its dock first, then name the release, e.g. `sudo wyze-plugin-update v1.1.3`.
 
 ## Building from source
 

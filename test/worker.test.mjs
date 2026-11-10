@@ -88,6 +88,31 @@ test('a hung request times out and the next one gets a fresh worker', async () =
   assert.notEqual(w['child'].pid, pid);
 });
 
+test('the timeout counts only the time a request is being worked on, not time waiting behind others', async () => {
+  const w = worker('pw', 3000);
+  await w.request('getVacuumStatus', [NICK]);
+  const pid = w['child'].pid;
+  W.set({ hold: 2 });   // each device listing takes 2 s: two in a row take 4 s, more than the 3 s timeout
+  const listing = () => { fs.rmSync(W.tokenFile + '.devices.json', { force: true }); return w.request('getVacuumDeviceList', []); };
+  const [a, b] = await Promise.all([listing(), listing()]);
+  W.set({ hold: 0 });
+  assert.deepEqual([a.ok, b.ok], [true, true], `${a.stderr} ${b.stderr}`);
+  assert.equal(w['child'].pid, pid, 'no restart');
+});
+
+test('a timed-out request does not take the requests waiting behind it down with it', async () => {
+  const w = worker('pw', 3000);
+  await w.request('getVacuumStatus', [NICK]);
+  fs.rmSync(W.tokenFile + '.devices.json', { force: true });
+  W.set({ hold: 6 });
+  const hung = w.request('getVacuumDeviceList', []);
+  const next = w.request('getVacuumStatus', [NICK]);
+  await sleep(1000);
+  W.set({ hold: 0 });
+  assert.equal((await hung).ok, false);
+  assert.equal((await next).ok, true, 'sent to the new worker');
+});
+
 test('a crashed worker is started again on the next request', async () => {
   const w = worker();
   await w.request('getVacuumStatus', [NICK]);
@@ -114,6 +139,45 @@ test('expired token is refreshed once, not a new login', async () => {
   assert.equal((await w.request('getVacuumStatus', [NICK])).ok, true);
   assert.equal(W.read().logins, before.logins);
   assert.equal(W.read().refreshes, (before.refreshes ?? 0) + 1);
+});
+
+test('a login that cannot be saved (disk full, read-only) is kept in memory: no password login per request', async () => {
+  const blocker = path.join(W.dir, 'not-a-folder');
+  fs.writeFileSync(blocker, 'x');   // the token file's folder can't be created, even as root
+  const w = new PyWorker({ python: PYTHON, script: path.join(HELPERS, 'wyze_worker.py'),
+    secrets: () => ({ ...W.secrets(), WYZE_TOKEN_FILE: path.join(blocker, 'tokens.json') }), timeoutMs: 20_000, log: (m) => logs.push(m) });
+  workers.push(w);
+  const n = logs.length;
+  const before = W.read().logins ?? 0;
+  for (let i = 0; i < 3; i++) {
+    const r = await w.request('getVacuumStatus', [NICK]);
+    assert.equal(r.ok, true, r.stderr);
+  }
+  assert.equal(W.read().logins, before + 1, 'one login, then the tokens in memory');
+  W.set({ valid_access: 'expired-by-test' });
+  const refreshes = W.read().refreshes ?? 0;
+  assert.equal((await w.request('getVacuumStatus', [NICK])).ok, true);
+  assert.deepEqual([W.read().logins, W.read().refreshes], [before + 1, refreshes + 1], 'refreshed, not a new login');
+  assert.equal(logs.slice(n).filter((l) => l.includes('Could not save the Wyze login')).length, 1, 'said once');
+});
+
+test('a tokenFile in an existing folder leaves that folder\'s permissions alone; files are owner-only', async () => {
+  const dir = path.join(W.dir, 'shared');
+  fs.mkdirSync(dir, { mode: 0o755 });
+  fs.chmodSync(dir, 0o755);
+  const tokenFile = path.join(dir, 'tokens.json');
+  const w = new PyWorker({ python: PYTHON, script: path.join(HELPERS, 'wyze_worker.py'),
+    secrets: () => ({ ...W.secrets(), WYZE_TOKEN_FILE: tokenFile }), timeoutMs: 20_000, log: (m) => logs.push(m) });
+  workers.push(w);
+  assert.equal((await w.request('getVacuumStatus', [NICK])).ok, true);
+  assert.equal(fs.statSync(dir).mode & 0o777, 0o755, 'folder not locked down');
+  assert.equal(fs.statSync(tokenFile).mode & 0o777, 0o600);
+  const own = path.join(W.dir, 'new', 'wyze-robovac');   // a folder the plugin creates: owner-only
+  const w2 = new PyWorker({ python: PYTHON, script: path.join(HELPERS, 'wyze_worker.py'),
+    secrets: () => ({ ...W.secrets(), WYZE_TOKEN_FILE: path.join(own, 'tokens.json') }), timeoutMs: 20_000, log: (m) => logs.push(m) });
+  workers.push(w2);
+  assert.equal((await w2.request('getVacuumStatus', [NICK])).ok, true);
+  assert.equal(fs.statSync(own).mode & 0o777, 0o700);
 });
 
 test('wrong password: clear error, then no retry for 15 min', async () => {

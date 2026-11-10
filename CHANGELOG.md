@@ -82,7 +82,7 @@ Housekeeping only; the plugin behaves exactly as 1.0.1-secure.3.
 
 ## [1.2.0-dev-1] - 2026-11-10
 
-Test version, published under npm's `dev` tag.
+Test version, published under npm's `dev` tag. To go back to 1.1.3 later, send the vacuum to its dock first.
 
 ### ** Added **
 
@@ -97,6 +97,23 @@ Test version, published under npm's `dev` tag.
 - At startup the room list is read up to three times, 15 s apart, as for the vacuum itself.
 - A different cleaning run mode chosen while the vacuum is busy is logged and not started (Matterbridge refuses that change too); previously only "Cleaning" existed.
 - The run-mode handler is registered for run-mode changes only, so a suction change can never be taken for a run-mode change.
+
+### ** Fixed ** (found in a review of the whole plugin; most were already in 1.1.3)
+
+- Two rooms with the same name on one floor, or a floor name over 64 bytes, stopped the plugin from starting (Matter refused the list). Rooms sharing a name are now listed once and cleaned together; names are shortened to Matter's limits for Home and Alexa, while the full Wyze names are used for the vacuum. A room list Matter refuses is logged and no longer stops the plugin.
+- A Wyze map without rooms, an unnamed room, or no current map (all reported as None by wyze-sdk) failed the room list and every start. They are handled, and a floor without rooms can still be cleaned whole.
+- The 90 s helper timeout counted time a request spent waiting behind others, so a slow Wyze could fail, and restart the helper under, a command that had gone through. Requests now queue in the plugin and the timeout covers only the time the helper works on one; a timeout no longer fails the requests behind it.
+- When the token cache couldn't be written (disk full, read-only), every status check logged in with the password, which risks a Wyze lockout. The login is now kept in memory (with one warning in the log), and a full login happens only when Wyze refuses the refresh token, not on a network error during a refresh.
+- If Wyze couldn't be reached while Matterbridge started, the vacuum stayed missing from Home until a manual restart. It now starts with the vacuum found last time, and reads the room list once Wyze answers (instead of after 6 hours).
+- When Wyze doesn't answer three status checks in a row, Home shows a "Wyze cloud not reachable" error instead of the last state it was told.
+- A custom `tokenFile` made the plugin restrict that file's folder to its owner (with `~/tokens.json`, the home folder). Only a folder the plugin creates, or its own `wyze-robovac` folder, is changed now.
+- `migrate-to-plus.sh` created its backup (which holds the Wyze password and tokens) readable by other users; it is owner-only now. Backups made before can be fixed with `sudo chmod 600 /opt/matterbridge/plugin-backup/pre-plus-*.tgz`.
+- `wyze-plugin-update` no longer "updates" a newer test version to an older release; going back needs the release named, with a reminder to dock the vacuum first. The plugin also stores "Clean" instead of a room run mode when it shuts down, so an older version (which knows only Dock and Clean) can always start the device.
+- Pause and resume follow Matterbridge's rules: nothing is sent to the vacuum when Home is told the command is refused (for example "resume" while docked, which started a new run). Two starts in quick succession send one run; a resume is no longer turned into a new run by rooms just picked in Home; the current room is cleared once the vacuum docks.
+
+### ** Security **
+
+- Release workflow: the job that runs npm has a read-only token that is not stored in the checkout, installs run without package install scripts, only a separate job (running no repository or npm code) can create the release, actions are pinned to commits, npm is pinned, and releases come only from `main` or a `v*` tag. Pre-release numbers other than `-dev-` go to npm's `next` tag.
 
 ### ** Fixed ** (found in review before release)
 

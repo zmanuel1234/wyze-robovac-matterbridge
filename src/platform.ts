@@ -56,6 +56,7 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
   // and idle), so rooms renamed or added in the Wyze app show up without a restart.
   static readonly ROOM_REFRESH_MS = 6 * 60 * 60 * 1000;
   static ROOM_LIST_RETRY_MS = 15_000;   // between tries at startup (tests shorten it)
+  static VACUUM_RETRY_MS = 30_000;      // the same for finding the vacuum
 
   // Run modes. 1 and 2 are the ones every controller knows; Apple Home starts a clean of
   // the rooms picked in its room list with 2. Controllers without a room list (Alexa)
@@ -67,6 +68,12 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
   static readonly MAX_MODE = 254;
   // The Wyze room list's whole-floor entry (see getVacuumFloors.py); never shown in Home.
   static readonly ENTIRE_FLOOR = '*Entire Floor*';
+
+  // Status checks in a row that fail (Wyze unreachable, login refused) before Home shows
+  // an error instead of the last state it was told.
+  static readonly STATUS_FAILURES_SHOWN = 3;
+  // While the room list could not be read, how often to try again.
+  static readonly ROOM_RETRY_MS = 5 * 60 * 1000;
 
   // Oldest Matterbridge this version has been tested with.
   static readonly MIN_MATTERBRIDGE = '3.11.0';
@@ -89,8 +96,11 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
   // Area and map IDs by name, so a room keeps its ID when the room list is read again.
   private readonly areaIds = new Map<string, number>();   // "floor<TAB>room" -> areaId
   private readonly mapIds = new Map<string, number>();    // floor name -> mapId
+  private readonly fullNames = new Map<string, string>(); // "map:<id>"/"area:<id>" -> name as in Wyze
   private lastRoomRefresh = 0;
   private roomsLoaded = false;   // the room list was read from Wyze at least once
+  private statusFailures = 0;    // status checks in a row that failed
+  private starting = false;      // a start or resume is being sent to the vacuum
   private idleOnDock = false;   // last status check: docked, idle and no fault
   private isDocked = true;
   private fault : string = 'None';   // Wyze fault name from the last status check, e.g. 'COLLISION_EXCEPTION'
@@ -179,9 +189,19 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
     // Pi boots, so try a few times before giving up.
     for( let attempt = 1; attempt <= 3 && !this.macAddr && !this.stopping; attempt++ ) {
       if( attempt > 1 ) {
-        await setTimeout(30_000);
+        await setTimeout(RoboVacMatterbridgeDynamicPlatform.VACUUM_RETRY_MS);
       }
       await this.findDevices();
+    }
+    if( !this.macAddr && !this.stopping ) {
+      // Wyze unreachable at boot: start with the vacuum found last time, so it is still in
+      // Home; commands and the room list work once Wyze answers again.
+      const last = this.readLastVacuum();
+      if( last ) {
+        [this.nickname, this.macAddr] = [last.nickname, last.mac];
+        this.log.warn(`Wyze did not answer; using the vacuum found last time ('${this.nickname}'). ` +
+          'It is updated once Wyze can be reached.');
+      }
     }
     if( !this.macAddr ) {
       this.log.error('No Wyze robot vacuum found on the account (see the messages above). ' +
@@ -240,7 +260,7 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
         },
       ], // supportedAreas
       [], // selectedAreas
-      1, // currentArea
+      null, // currentArea: no run yet
       [
         {
           mapId: 1,
@@ -259,18 +279,34 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
      * the real state is written by the next status check, after the handler returns
      * (see afterCommand), not from inside the handler, where it would be overwritten.
      */
-    this.roboticVacuum.addCommandHandler('pause', async () => {
+    // Matterbridge runs these before its own checks, then accepts pause only while running
+    // or returning to the dock, and resume only while paused: the same is done here, so
+    // nothing is sent to the vacuum for a command Home is told was refused.
+    const OS = RvcOperationalState.OperationalState;
+    const opStateOf = (attributes : unknown) =>
+      Number((attributes as { operationalState?: number } | undefined)?.operationalState ?? OS.Running);
+    this.roboticVacuum.addCommandHandler('pause', async ({ attributes }) => {
       this.log.info('\'pause\' handler called - RoboVac');
+      const state = opStateOf(attributes);
+      if( state !== OS.Running && state !== OS.SeekingCharger ) {
+        this.log.info(state === OS.Paused ? 'Already paused' : 'Pause not sent: the vacuum is not cleaning or returning');
+        return;
+      }
       if( await this.pauseSweeping() ) {
-        this.lastAppliedState = this.stateKey(2, RvcOperationalState.OperationalState.Paused);
+        this.lastAppliedState = this.stateKey(this.activeRunMode, OS.Paused);
         this.commandGraceUntil = Date.now() + RoboVacMatterbridgeDynamicPlatform.COMMAND_GRACE_MS;
         this.pokeStatusLoop = true;
       }
     });
 
-    this.roboticVacuum.addCommandHandler('resume', async () => {
+    this.roboticVacuum.addCommandHandler('resume', async ({ attributes }) => {
       this.log.info('\'resume\' handler called - RoboVac');
-      this.sweepInBackground();
+      const state = opStateOf(attributes);
+      if( state !== OS.Paused ) {
+        this.log.info(state === OS.Running ? 'Already cleaning' : 'Resume not sent: the vacuum is not paused');
+        return;
+      }
+      this.sweepInBackground(undefined, this.activeRunMode, true);
     });
 
     // Returns as soon as the dock command is sent: Matterbridge shows "returning to dock"
@@ -379,6 +415,18 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
   override async onShutdown(reason?: string) {
     this.stopping = true;        // ends the status loop
     this.pokeStatusLoop = true;
+    // Matter stores the current run mode for the next start. A room mode ("Clean Bed")
+    // is stored as plain "Clean" (also true), which every version of this plugin lists,
+    // so going back to an older version after an update can't hit an unknown mode. The
+    // next status check shows the room mode again.
+    if( this.roboticVacuum && this.currentRunMode() >= RoboVacMatterbridgeDynamicPlatform.FIRST_TARGET_MODE ) {
+      try {
+        await this.roboticVacuum.setAttribute('RvcRunMode', 'currentMode', RoboVacMatterbridgeDynamicPlatform.RUN_CLEAN, this.log);
+        this.rememberShownMode(RoboVacMatterbridgeDynamicPlatform.RUN_CLEAN);
+      } catch {
+        // shutting down anyway; the saved mode is still listed at the next start
+      }
+    }
     this.worker.stop();
     await super.onShutdown(reason);
     const out : string = reason ? reason : 'none';
@@ -408,7 +456,7 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
   /***************** SetFloor **********************/
 
   async setFloor(mapId : number | undefined) {
-    const floorName = this.supportedMaps.find((m) => m.mapId === mapId)?.name;
+    const floorName = this.floorFullName(mapId);
     if( floorName === undefined ) {
       return;   // no room list from Wyze: clean whichever floor is current
     }
@@ -446,7 +494,7 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
       return false;
     }
     const roomNames : string[] = roomIds
-      .map((id) => this.supportedAreas.find((a) => a.areaId === id)?.areaInfo.locationInfo.locationName)
+      .map((id) => this.roomFullName(id))
       .filter((name) : name is string => name !== undefined);
     if( roomNames.length === 0 ) {
       roomNames.push(RoboVacMatterbridgeDynamicPlatform.ENTIRE_FLOOR);   // matches no room: the helper cleans the whole floor
@@ -499,8 +547,17 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
     const r = await this.py('getVacuumStatus.py', [this.nickname]);
     if( !r.ok ) {
       this.log.info(`Status check failed: ${r.stderr}`);
+      this.statusFailures++;
+      if( this.statusFailures >= RoboVacMatterbridgeDynamicPlatform.STATUS_FAILURES_SHOWN && !this.offline ) {
+        await this.showUnreachable();
+      }
       return this.statusRefreshInterval || this.interval('busyStatusCheckRefreshInterval');
     }
+    if( this.statusFailures >= RoboVacMatterbridgeDynamicPlatform.STATUS_FAILURES_SHOWN ) {
+      this.log.info('Wyze answers again');
+      this.lastAppliedState = '';   // write the real state again below
+    }
+    this.statusFailures = 0;
     // "mode:battery:is_charging:fault:suction:online:online_since",
     // e.g. "VacuumMode.IDLE:87:True:None:quiet:True:1762149273"
     const fields = r.stdout.trim().split(':');
@@ -571,6 +628,10 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
         this.lastAppliedState = key;
         this.rememberShownMode(runMode);
         await this.roboticVacuum.setAttribute('RvcRunMode', 'currentMode', runMode, this.log);
+        if( runMode === RoboVacMatterbridgeDynamicPlatform.RUN_DOCK ) {
+          // No run, so no room being cleaned (Matter: null or a listed room).
+          await this.roboticVacuum.updateAttribute(ServiceArea.Cluster.id, 'currentArea', null, this.log);
+        }
         await this.roboticVacuum.setAttribute('RvcOperationalState', 'operationalState', opState, this.log);
         await this.roboticVacuum.setAttribute('RvcOperationalState', 'operationalError', fault
           ? { errorStateId: fault.id, errorStateDetails: fault.details }
@@ -632,6 +693,22 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
     return this.nextCheckIn(this.interval('idleStatusCheck1RefreshInterval'));
   }
 
+  // Wyze has not answered several status checks in a row: show an error rather than a
+  // state that may be long out of date. The first check that works writes the real one.
+  private async showUnreachable() {
+    const key = 'unreachable';
+    if( this.roboticVacuum && this.lastAppliedState !== key && Date.now() >= this.commandGraceUntil ) {
+      this.lastAppliedState = key;
+      this.idleOnDock = false;
+      this.log.warn(`Wyze has not answered ${this.statusFailures} status checks in a row; Home shows an error until it does`);
+      await this.roboticVacuum.setAttribute('RvcOperationalState', 'operationalState',
+        RvcOperationalState.OperationalState.Error, this.log);
+      await this.roboticVacuum.setAttribute('RvcOperationalState', 'operationalError',
+        { errorStateId: RvcOperationalState.ErrorState.UnableToCompleteOperation, errorStateDetails: 'Wyze cloud not reachable' },
+        this.log);
+    }
+  }
+
   /*
    * Before sending a command: when the last check found the vacuum offline, check again
    * (it may have reconnected since) and refuse if it still is. Matterbridge shows the
@@ -678,6 +755,38 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
       this.macAddr = line.slice(sep + 1);
       this.myLogger(`Found vacuum '${this.nickname}' (${this.macAddr})`);
     }
+    if( this.macAddr ) {
+      this.saveLastVacuum();
+    }
+  }
+
+  // The vacuum found last time (vacuum.json next to the token cache), for a start while
+  // Wyze is unreachable.
+  vacuumFile() : string {
+    return path.join(path.dirname(this.tokenFile()), 'vacuum.json');
+  }
+
+  readLastVacuum() : { nickname : string, mac : string } | undefined {
+    try {
+      const v = JSON.parse(readFileSync(this.vacuumFile(), 'utf8'));
+      return typeof v?.nickname === 'string' && typeof v?.mac === 'string' && v.mac ? { nickname: v.nickname, mac: v.mac } : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  saveLastVacuum() {
+    const last = this.readLastVacuum();
+    if( last?.nickname === this.nickname && last.mac === this.macAddr ) {
+      return;
+    }
+    try {
+      mkdirSync(path.dirname(this.vacuumFile()), { recursive: true, mode: 0o700 });
+      writeFileSync(`${this.vacuumFile()}.tmp`, JSON.stringify({ nickname: this.nickname, mac: this.macAddr }) + '\n', { mode: 0o600 });
+      renameSync(`${this.vacuumFile()}.tmp`, this.vacuumFile());
+    } catch (e) {
+      this.log.info(`Could not save ${this.vacuumFile()}: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 
   // Lines of "room<TAB>floor", including one "*Entire Floor*<TAB>floor" per floor.
@@ -721,11 +830,20 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
     if( !this.roboticVacuum || this.supportedAreas.length === 0 ) {
       return;
     }
-    // A selection must only name areas that exist; drop rooms that are gone.
+    // A selection must only name areas that exist; drop rooms that are gone. The current
+    // area and selection are cleared first, so no step names an area that isn't listed.
     this.selectedAreas = this.selectedAreas.filter((id) => this.supportedAreas.some((a) => a.areaId === id));
-    await this.roboticVacuum.updateAttribute(ServiceArea.Cluster.id, 'selectedAreas', [...this.selectedAreas], this.log);
-    await this.roboticVacuum.updateAttribute(ServiceArea.Cluster.id, 'supportedMaps', this.supportedMaps, this.log);
-    await this.roboticVacuum.updateAttribute(ServiceArea.Cluster.id, 'supportedAreas', this.supportedAreas, this.log);
+    try {
+      await this.roboticVacuum.updateAttribute(ServiceArea.Cluster.id, 'currentArea', null, this.log);
+      await this.roboticVacuum.updateAttribute(ServiceArea.Cluster.id, 'selectedAreas', [], this.log);
+      await this.roboticVacuum.updateAttribute(ServiceArea.Cluster.id, 'supportedMaps', this.supportedMaps, this.log);
+      await this.roboticVacuum.updateAttribute(ServiceArea.Cluster.id, 'supportedAreas', this.supportedAreas, this.log);
+      await this.roboticVacuum.updateAttribute(ServiceArea.Cluster.id, 'selectedAreas', [...this.selectedAreas], this.log);
+    } catch (e) {
+      // A room list Matter refuses must not stop the plugin: Home keeps the previous list.
+      this.log.error(`Matter refused the room list from Wyze (${e instanceof Error ? e.message : String(e)}); ` +
+        'Home keeps the previous rooms');
+    }
   }
 
   // =========================== Utilities ===================================
@@ -876,8 +994,11 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
    * is read again; new rooms and floors get new IDs.
    */
   setupSupportedAreas() {
+    const C = RoboVacMatterbridgeDynamicPlatform;
     const maps : typeof this.supportedMaps = [];
     const areas : typeof this.supportedAreas = [];
+    const notes : string[] = [];
+    this.fullNames.clear();
     for (const room of this.rooms) {
       // Tab-separated, so room and floor names may contain ':'.
       const [roomName, floorName = ''] = room.split('\t');
@@ -887,7 +1008,9 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
         this.mapIds.set(floorName, mapId);
       }
       if( !maps.some((m) => m.mapId === mapId) ) {
-        maps.push({ mapId, name: floorName });
+        // Matter: map names at most 64 bytes and unique. The full name is kept for Wyze.
+        maps.push({ mapId, name: C.uniqueText(floorName, 64, maps.map((m) => m.name)) });
+        this.fullNames.set(`map:${mapId}`, floorName);
       }
       const key = `${floorName}\t${roomName}`;
       let areaId = this.areaIds.get(key);
@@ -897,20 +1020,63 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
       }
       // The floor itself is not listed (picking no rooms, or all of them, cleans it), but
       // keeps its ID, so the rooms' IDs, which Home scenes store, are the same as before.
-      if( roomName === RoboVacMatterbridgeDynamicPlatform.ENTIRE_FLOOR ) {
+      if( roomName === C.ENTIRE_FLOOR ) {
         continue;
       }
+      // Two rooms with the same name on one floor: Matter needs distinct areas, and the
+      // vacuum is told rooms by name, so one entry cleans both.
+      if( areas.some((a) => a.areaId === areaId) ) {
+        notes.push(`'${roomName}' (${floorName})`);
+        continue;
+      }
+      const taken = areas.filter((a) => a.mapId === mapId).map((a) => a.areaInfo.locationInfo.locationName);
       areas.push({
         areaId,
         mapId,
         areaInfo: {
-          locationInfo: { locationName: roomName, floorNumber: maps.findIndex((m) => m.mapId === mapId), areaType: null },
+          // Matter: at most 128 bytes, unique on its floor. The full name is kept for Wyze.
+          locationInfo: { locationName: C.uniqueText(roomName, 128, taken), floorNumber: maps.findIndex((m) => m.mapId === mapId),
+            areaType: null },
           landmarkInfo: null,
         },
       });
+      this.fullNames.set(`area:${areaId}`, roomName);
+    }
+    if( notes.length > 0 ) {
+      this.log.info(`Rooms named more than once on a floor are listed once and cleaned together: ${notes.join(', ')}`);
     }
     this.supportedMaps = maps;
     this.supportedAreas = areas;
+  }
+
+  // text cut to maxBytes of UTF-8 at a character boundary and, if that is already taken,
+  // ended with " (2)", " (3)", ... (Matter wants names on one list to differ).
+  static uniqueText(text : string, maxBytes : number, taken : string[]) : string {
+    const cut = (t : string, max : number) => {
+      let out = '';
+      for (const ch of t) {
+        if( Buffer.byteLength(out + ch, 'utf8') > max ) {
+          break;
+        }
+        out += ch;
+      }
+      return out;
+    };
+    let name = cut(text, maxBytes);
+    for (let n = 2; taken.includes(name); n++) {
+      const suffix = ` (${n})`;
+      name = cut(text, maxBytes - Buffer.byteLength(suffix, 'utf8')) + suffix;
+    }
+    return name;
+  }
+
+  // The names Wyze knows (supportedMaps/supportedAreas hold Matter's shortened ones).
+  floorFullName(mapId : number | undefined) : string | undefined {
+    return mapId === undefined ? undefined : this.fullNames.get(`map:${mapId}`);
+  }
+
+  roomFullName(areaId : number) : string | undefined {
+    return this.fullNames.get(`area:${areaId}`);
   }
 
   /*
@@ -960,24 +1126,27 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
         this.log.warn(`Too many rooms for run modes; '${label}' is not offered`);
         return;
       }
-      // Two rooms with the same name on one floor (or a room called "All"): Matter
-      // needs distinct modes, so only the first is offered; Home's room list has both.
-      if( modes.some((m) => m.mode === mode || m.label === label) ) {
-        this.log.warn(`Run mode '${label}' is offered only once; rename the duplicate room in the Wyze app to get both`);
+      // Matter wants distinct modes: a label that is already taken (a room called "All",
+      // or two long names cut to the same 64 bytes) gets " (2)", and a number used twice
+      // keeps its first room.
+      if( modes.some((m) => m.mode === mode) ) {
+        this.log.warn(`Run mode '${label}' is not offered: its number ${mode} is already used`);
         return;
       }
+      label = C.uniqueText(label, 64, modes.map((m) => m.label));
       modes.push({ label, mode, modeTags: cleaning });
       this.modeTargets.set(mode, { ...target, label });
       kept[key] = { mode, label };
     };
-    const floorSuffix = (mapId : number) => ` (${this.supportedMaps.find((m) => m.mapId === mapId)?.name ?? ''})`;
+    const floorSuffix = (mapId : number) => ` (${this.floorFullName(mapId) ?? ''})`;
     for (const map of this.supportedMaps) {
-      offer(`${map.name}\t${C.ENTIRE_FLOOR}`, C.modeText('Clean All' + (this.supportedMaps.length > 1 ? floorSuffix(map.mapId) : '')),
+      const floor = this.floorFullName(map.mapId) ?? map.name;
+      offer(`${floor}\t${C.ENTIRE_FLOOR}`, C.modeText('Clean All' + (this.supportedMaps.length > 1 ? floorSuffix(map.mapId) : '')),
         { mapId: map.mapId });
       for (const area of this.supportedAreas.filter((a) => a.mapId === map.mapId)) {
-        const name = area.areaInfo.locationInfo.locationName;
-        const shared = this.supportedAreas.some((a) => a.mapId !== map.mapId && a.areaInfo.locationInfo.locationName === name);
-        offer(`${map.name}\t${name}`, C.modeText(`Clean ${name}` + (shared ? floorSuffix(map.mapId) : '')),
+        const name = this.roomFullName(area.areaId) ?? area.areaInfo.locationInfo.locationName;
+        const shared = this.supportedAreas.some((a) => a.mapId !== map.mapId && this.roomFullName(a.areaId) === name);
+        offer(`${floor}\t${name}`, C.modeText(`Clean ${name}` + (shared ? floorSuffix(map.mapId) : '')),
           { mapId: map.mapId, areaId: area.areaId });
       }
     }
@@ -1082,7 +1251,7 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
   }
 
   areaName(id : number) : string {
-    return this.supportedAreas.find((a) => a.areaId === id)?.areaInfo.locationInfo.locationName ?? `area ${id}`;
+    return this.roomFullName(id) ?? `area ${id}`;
   }
 
   // Start or resume from a Home command without holding the command up: picking the
@@ -1106,7 +1275,7 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
     const mapId = mapOf(known[0]);
     const skipped = known.filter((id) => mapOf(id) !== mapId);
     if( skipped.length > 0 ) {
-      const floorName = this.supportedMaps.find((m) => m.mapId === mapId)?.name ?? '';
+      const floorName = this.floorFullName(mapId) ?? '';
       this.log.warn('Rooms on more than one floor were selected. The vacuum cleans one floor per run, so only ' +
         `rooms on '${floorName}' are cleaned now; skipped: ${skipped.map((id) => this.areaName(id)).join(', ')}`);
     }
@@ -1122,6 +1291,21 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
   // resume: the run mode asked for is the one already shown, so resume a paused run.
   async doSweeping(target? : RunTarget, mode : number = RoboVacMatterbridgeDynamicPlatform.RUN_CLEAN,
     resume = false) {
+    // One start at a time: a command repeated while the first is still being sent (Wyze
+    // takes 20-30 s) would otherwise switch the floor and start a second run.
+    if( this.starting ) {
+      this.log.info('A start is already being sent to the vacuum; this one is skipped');
+      return;
+    }
+    this.starting = true;
+    try {
+      await this.doSweepingNow(target, mode, resume);
+    } finally {
+      this.starting = false;
+    }
+  }
+
+  private async doSweepingNow(target : RunTarget | undefined, mode : number, resume : boolean) {
     // Polls during the next steps must not undo the "cleaning" Matterbridge just showed.
     this.commandGraceUntil = Date.now() + RoboVacMatterbridgeDynamicPlatform.COMMAND_GRACE_MS;
     // Decide between "start a new run" and "resume" on the vacuum's current status,
@@ -1133,7 +1317,8 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
     }
     let ok : boolean;
     let roomIds : number[] = [];
-    const newRun = (target !== undefined && !resume) || this.currentStatus === 'VacuumMode.IDLE' || this.newRoomsSelected;
+    // resume: a pause is resumed even with rooms just picked in Home (they are for the next run).
+    const newRun = (target !== undefined && !resume) || this.currentStatus === 'VacuumMode.IDLE' || (this.newRoomsSelected && !resume);
     if( newRun ) {
       // A floor/room run mode cleans what it names; otherwise the rooms picked in Home.
       const plan = target
@@ -1178,8 +1363,10 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
       let refreshInterval = 60;
       try {
         refreshInterval = Number(await this.getStatus()) || 60;   // 60 s if the settings are unusable
-        if( this.idleOnDock && Date.now() - this.lastRoomRefresh >= RoboVacMatterbridgeDynamicPlatform.ROOM_REFRESH_MS ) {
-          await this.refreshRooms();
+        const sinceRooms = Date.now() - this.lastRoomRefresh;
+        if( (this.idleOnDock && sinceRooms >= RoboVacMatterbridgeDynamicPlatform.ROOM_REFRESH_MS)
+            || (!this.roomsLoaded && this.statusFailures === 0 && sinceRooms >= RoboVacMatterbridgeDynamicPlatform.ROOM_RETRY_MS) ) {
+          await this.refreshRooms();   // also: the room list couldn't be read at startup
         }
       } catch (e) {
         // For example Matterbridge refusing an attribute value: log it and keep polling,

@@ -51,6 +51,21 @@ api() {   # api URL [ACCEPT] -> body on stdout
 }
 json() { python3 -c "import json,sys; d=json.load(sys.stdin); print($1)"; }
 
+# Prints -1, 0 or 1 as version $1 is older than, the same as or newer than $2 (semver:
+# 1.2.0-dev-1 is newer than 1.1.3 and older than 1.2.0).
+version_cmp() {
+  python3 - "$1" "$2" <<'PY'
+import re, sys
+def key(v):
+    core, _, pre = v.lstrip("v").partition("-")
+    nums = [int(x) if x.isdigit() else 0 for x in core.split(".")[:3]] + [0, 0, 0]
+    parts = [(0, int(p), "") if p.isdigit() else (1, 0, p) for p in re.split(r"[.-]", pre)] if pre else []
+    return (nums[:3], 0 if pre else 1, parts)
+a, b = key(sys.argv[1]), key(sys.argv[2])
+print((a > b) - (a < b))
+PY
+}
+
 installed_version() { [ -f "$PLUGIN_DIR/package.json" ] && json "d['version']" < "$PLUGIN_DIR/package.json" || echo none; }
 installed_build() {
   if [ -f "$PLUGIN_DIR/build-info.json" ]; then
@@ -72,13 +87,28 @@ have=$(installed_version)
 
 echo "Installed: $have ($(installed_build))"
 echo "On GitHub: ${tag#v} (release $tag, $(json "d['published_at'][:10]" < "$WORK/release.json"))"
+order=0
+[ "$have" != none ] && order=$(version_cmp "$have" "$tag")
 if [ "$want" = check ]; then
-  [ "v$have" = "$tag" ] && echo "Up to date." || echo "Run 'sudo wyze-plugin-update' to install $tag."
+  case "$order" in
+    0)  echo "Up to date." ;;
+    1)  echo "The installed version is newer than the latest release (a test version)." ;;
+    *)  echo "Run 'sudo wyze-plugin-update' to install $tag." ;;
+  esac
   exit 0
 fi
-if [ "$want" = latest ] && [ "v$have" = "$tag" ] && [ -f "$PLUGIN_DIR/build-info.json" ]; then
+if [ "$want" = latest ] && [ "$order" = 0 ] && [ -f "$PLUGIN_DIR/build-info.json" ]; then
   echo "Already up to date."
   exit 0
+fi
+if [ "$want" = latest ] && [ "$order" = 1 ]; then
+  echo "The installed $have is newer than the latest release $tag (a test version); not going back."
+  echo "To go back, send the vacuum to its dock first, then run: sudo wyze-plugin-update $tag"
+  exit 0
+fi
+if [ "$order" = 1 ]; then
+  echo "Going back from $have to ${tag#v}. Send the vacuum to its dock first (room run modes of the newer"
+  echo "version are not known to older ones)."
 fi
 
 # Download the package and the checksum file attached to the release.

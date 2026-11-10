@@ -122,11 +122,15 @@ echo "[1/6] Stopping Matterbridge"
 systemctl stop matterbridge
 
 echo "[2/6] Backup"
-mkdir -p "$BACKUP_DIR"
+mkdir -p -m 700 "$BACKUP_DIR"
+chmod 700 "$BACKUP_DIR"
 STAMP=$(date +%F-%H%M)
 paths=("$MBDIR" "$PREFIX/lib/node_modules/$OLD")
 [ -d "$HOMEDIR/Matterbridge" ] && paths+=("$HOMEDIR/Matterbridge")
-tar czf "$BACKUP_DIR/pre-plus-$STAMP.tgz" -P "${paths[@]}"
+# The backup holds the plugin settings (Wyze password), the token cache and Matter's
+# storage: owner-only from the moment it is created.
+( umask 077 && tar czf "$BACKUP_DIR/pre-plus-$STAMP.tgz" -P "${paths[@]}" )
+chmod 600 "$BACKUP_DIR/pre-plus-$STAMP.tgz"
 chown "$MB_USER:" "$BACKUP_DIR/pre-plus-$STAMP.tgz"
 echo "      $BACKUP_DIR/pre-plus-$STAMP.tgz ($(du -h "$BACKUP_DIR/pre-plus-$STAMP.tgz" | cut -f1))"
 

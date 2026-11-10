@@ -42,7 +42,7 @@
     "node": ">=22.0.0 <23.0.0 || >=24.0.0 <25.0.0"
   },
   "scripts": {
-    "dev:matterbridge": "npm install --no-save matterbridge@^3.11.1",
+    "dev:matterbridge": "npm install --no-save --ignore-scripts matterbridge@^3.11.1",
     "check:deps": "node -e \"const p=require('./package.json');const bad=['dependencies','devDependencies','peerDependencies','optionalDependencies'].flatMap((t)=>Object.keys(p[t]||{})).filter((n)=>/^(matterbridge|@matterbridge|@matter|@project-chip)/.test(n));if(bad.length){console.error('Matterbridge refuses plugins that list: '+bad.join(', ')+'. Use npm run dev:matterbridge instead.');process.exit(1)}\"",
     "lint": "eslint src --max-warnings=0",
     "build": "node -e \"for (const p of ['dist','tsconfig.tsbuildinfo']) require('fs').rmSync(p, { recursive: true, force: true })\" && tsc",

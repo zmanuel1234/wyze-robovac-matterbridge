@@ -79,10 +79,11 @@
     },
     "busyStatusCheckRefreshInterval": {
       "title": "Busy status Check Refresh Interval",
-      "description": "Seconds between status checks while the vacuum is cleaning, paused or returning to the dock. Default 45, minimum 25. Wyze may ignore requests if they come too often.",
+      "description": "Seconds between status checks while the vacuum is cleaning, paused or returning to the dock. Default 45, minimum 25, maximum 3600. Wyze may ignore requests if they come too often.",
       "type": "number",
       "default": 45,
-      "minimum": 25
+      "minimum": 25,
+      "maximum": 3600
     },
     "idleStatusCheck1RefreshInterval": {
       "title": "Idle status Check Refresh Interval with full charge",
@@ -94,10 +95,11 @@
     },
     "idleStatusCheck2RefreshInterval": {
       "title": "Idle status Check Refresh Interval with less than full charge",
-      "description": "Seconds between status checks while the vacuum is docked and charging. Default 60 (1 min), minimum 60.",
+      "description": "Seconds between status checks while the vacuum is docked and charging. Default 60 (1 min), minimum 60, maximum 3600.",
       "type": "number",
       "default": 60,
-      "minimum": 60
+      "minimum": 60,
+      "maximum": 3600
     },
     "pythonPath": {
       "title": "Python interpreter",

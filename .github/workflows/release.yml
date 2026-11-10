@@ -8,9 +8,9 @@ name: Release
 # tag and commit, and attached to the release with its SHA-256 checksum. The Pi installs
 # these releases with `sudo wyze-plugin-update` (tools/pi-update.sh).
 #
-# A version with a pre-release part (e.g. 1.2.0-dev-1) becomes a GitHub pre-release and is
-# published under npm's "dev" tag, where the Matterbridge UI looks for a plugin's dev version;
-# "latest" (what everyone else gets) is left alone.
+# A version with a pre-release part becomes a GitHub pre-release and leaves npm's "latest"
+# (what everyone else gets) alone: 1.2.0-dev-1 goes to npm's "dev" tag, where the
+# Matterbridge UI looks for a plugin's dev version; others (e.g. 1.2.0-rc.1) to "next".
 #
 # The "npm" job then publishes the same package to npm, with npm's trusted publishing
 # (no token stored anywhere). It only runs when the repository variable NPM_PUBLISH is
@@ -25,25 +25,31 @@ on:
 permissions:
   contents: read
 
+# Hardening: the job that runs npm (installs, lint, build, pack) has a read-only token
+# that is not stored in the checkout, and installs run without package install scripts.
+# Only the "release" job can write, and it runs no repository or npm code: it uploads
+# what "build" produced. Actions are pinned to commits. Releases come only from main or
+# from a v* tag.
 jobs:
   tests:
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     uses: ./.github/workflows/test.yml
 
-  release:
+  build:
     needs: tests
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
       tag: ${{ steps.v.outputs.tag }}
-    permissions:
-      contents: write   # to create the release
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262       # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020     # v4.4.0
         with:
           node-version: 22
           cache: npm
-      - run: npm ci --no-fund --no-audit
+      - run: npm ci --ignore-scripts --no-fund --no-audit
       - run: npm run dev:matterbridge
       - name: Work out the release tag from package.json
         id: v
@@ -54,7 +60,7 @@ jobs:
           if [ "$GITHUB_EVENT_NAME" = push ] && [ "$tag" != "$GITHUB_REF_NAME" ]; then
             echo "::error::Tag $GITHUB_REF_NAME, but package.json says $tag"; exit 1
           fi
-          if gh release view "$tag" >/dev/null 2>&1; then
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "::error::Release $tag already exists. Raise the version in package.json first."; exit 1
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
@@ -73,14 +79,41 @@ jobs:
         env:
           TAG: ${{ steps.v.outputs.tag }}
         run: awk -v v="${TAG#v}" '/^## \[/ { p = index($0, "[" v "]") > 0 } p' CHANGELOG.md > notes.md
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release
+          path: |
+            matterbridge-wyze-robovac-plus-*.tgz
+            SHA256SUMS
+            notes.md
+            tools/pi-update.sh
+            tools/migrate-to-plus.sh
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      tag: ${{ needs.build.outputs.tag }}
+    permissions:
+      contents: write   # to create the release; this job runs no repository or npm code
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release
+      - name: Check the package against its checksum
+        run: sha256sum --check --strict SHA256SUMS
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.v.outputs.tag }}
-        run: >
-          gh release create "$TAG" matterbridge-wyze-robovac-plus-*.tgz SHA256SUMS tools/pi-update.sh tools/migrate-to-plus.sh
-          --target "$GITHUB_SHA" --title "$TAG" --notes-file notes.md
-          $(case "$TAG" in *-*) echo --prerelease ;; esac)
+          TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          pre=""
+          case "$TAG" in *-*) pre="--prerelease" ;; esac
+          gh release create "$TAG" matterbridge-wyze-robovac-plus-*.tgz SHA256SUMS tools/pi-update.sh tools/migrate-to-plus.sh \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "$TAG" --notes-file notes.md $pre
 
   npm:
     needs: release
@@ -91,11 +124,11 @@ jobs:
       contents: read
       id-token: write   # npm trusted publishing
     steps:
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020     # v4.4.0
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
-      - run: npm install -g npm@^11.5.1   # trusted publishing needs npm 11.5.1 or later
+      - run: npm install -g --ignore-scripts npm@11.21.2   # trusted publishing needs npm 11.5.1 or later
       - name: Download the released package
         env:
           GH_TOKEN: ${{ github.token }}
@@ -110,6 +143,7 @@ jobs:
           TAG: ${{ needs.release.outputs.tag }}
         run: |
           case "$TAG" in
-            *-*) npm publish ./*.tgz --access public --tag dev ;;   # test version: Matterbridge's dev channel
-            *)   npm publish ./*.tgz --access public ;;
+            *-dev-*|*-git-*) npm publish ./*.tgz --access public --tag dev ;;    # Matterbridge's dev channel
+            *-*)             npm publish ./*.tgz --access public --tag next ;;   # other test versions (e.g. -rc.1)
+            *)               npm publish ./*.tgz --access public ;;
           esac

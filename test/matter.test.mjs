@@ -210,7 +210,8 @@ test('run modes: numbers kept when rooms are added; gone rooms dropped; duplicat
   assert.deepEqual([m['Clean Kitchen'], m['Clean Den: East'], m['Clean Bed'], m['Clean Hall']], [RUN.kitchen, RUN.den, RUN.bed, 17]);
   assert.equal(savedModes().modes['Main Floor\tLiving Room'], undefined, 'a room gone from Wyze frees its number');
   m = build(['*Entire Floor*\tMain Floor', 'Bath\tMain Floor', 'Bath\tMain Floor', 'All\tMain Floor']);
-  assert.deepEqual(Object.keys(m), ['Dock', 'Clean', 'Clean All', 'Clean Bath']);
+  assert.deepEqual(Object.keys(m), ['Dock', 'Clean', 'Clean All', 'Clean Bath', 'Clean All (2)']);   // one Bath; "All" kept apart
+  assert.equal(p.supportedAreas.length, 2, 'the two Baths are one area');
   assert.equal(p.constructor.modeText('Clean ' + 'é'.repeat(40)).length, 35, '64 bytes of UTF-8 (6 + 29 two-byte characters), whole characters');
   fs.writeFileSync(runModeFile(), backup.file);   // back to the device's list
   p.lastShownMode = backup.shown;
@@ -311,6 +312,43 @@ test('"Clean" uses the rooms picked in Home; all of a floor\'s rooms, or none, c
   await dev.commandHandler.executeHandler('selectAreas', { request: { newAreas: [] } });
   await p.doSweeping();
   assert.deepEqual(W.events(), ['set_map:1', 'sweep:[]']);
+  await docked();
+});
+
+test('pause and resume follow Matterbridge\'s rules: nothing is sent while docked', async () => {
+  await docked();
+  W.clearEvents();
+  await dev.invokeBehaviorCommand('rvcOperationalState', 'resume', {});   // e.g. Alexa "resume" while docked
+  await dev.invokeBehaviorCommand('rvcOperationalState', 'pause', {});
+  await sleep(500);
+  assert.deepEqual(W.events(), []);
+  assert.equal(runMode(), RUN.dock);
+});
+
+test('resume of a paused room run: resumes it even with rooms just picked in Home', async () => {
+  await docked();
+  await runModeCommand(RUN.den);
+  await waitForEvent('sweep');
+  p.commandGraceUntil = 0;
+  await poll({ mode: 'PAUSE', charging: false });
+  await dev.commandHandler.executeHandler('selectAreas', { request: { newAreas: [2] } });   // picked for the next run
+  W.clearEvents();
+  await dev.invokeBehaviorCommand('rvcOperationalState', 'resume', {});
+  await waitForEvent('clean');
+  assert.deepEqual(W.events().filter((e) => e !== 'list'), ['clean'], 'resumed, not a new run of the picked room');
+  assert.equal(runMode(), RUN.den);
+  p.newRoomsSelected = false;
+  await docked();
+  assert.equal(dev.state.serviceArea.currentArea, null, 'no current room once docked');
+});
+
+test('two starts in quick succession send one run', async () => {
+  await docked();
+  await dev.commandHandler.executeHandler('selectAreas', { request: { newAreas: [4] } });
+  W.clearEvents();
+  await Promise.all([p.doSweeping(), p.doSweeping()]);
+  assert.deepEqual(W.events().filter((e) => e.startsWith('sweep')), ['sweep:[13]']);
+  assert.ok(lines.some((l) => l.includes('A start is already being sent')));
   await docked();
 });
 
@@ -464,6 +502,64 @@ test('room list refresh keeps IDs, adds new rooms, drops vanished ones from the 
   const n = lines.length;
   await p.refreshRooms();
   assert.equal(lines.slice(n).some((l) => l.includes('room list changed')), false);
+});
+
+test('room names Matter would refuse: same name twice, very long names; Home gets a valid list', async () => {
+  const longFloor = 'Floor ' + 'F'.repeat(70);   // Matter: map names at most 64 bytes
+  const longRoom = 'Room ' + 'é'.repeat(70);     // Matter: area names at most 128 bytes
+  W.set({ maps: [{ name: 'Main Floor', rooms: ['Bath', 'Bath', longRoom] }, { name: longFloor, rooms: ['Den'] }] });
+  const n = lines.length;
+  await p.refreshRooms();
+  assert.deepEqual(lines.slice(n).filter((l) => l.startsWith('error:')), [], 'Matter accepted the list');
+  const names = dev.state.serviceArea.supportedAreas.map((a) => a.areaInfo.locationInfo.locationName);
+  assert.equal(names.filter((x) => x === 'Bath').length, 1, 'one Bath');
+  assert.ok(names.every((x) => Buffer.byteLength(x) <= 128));
+  assert.ok(dev.state.serviceArea.supportedMaps.every((m) => Buffer.byteLength(m.name) <= 64));
+  assert.ok(lines.slice(n).some((l) => l.includes('listed once and cleaned together')));
+  // Picking "Bath" cleans both Wyze rooms of that name; the long floor is switched to by its full name.
+  await docked();
+  const bath = dev.state.serviceArea.supportedAreas.find((a) => a.areaInfo.locationInfo.locationName === 'Bath').areaId;
+  await dev.commandHandler.executeHandler('selectAreas', { request: { newAreas: [bath] } });
+  await p.doSweeping();
+  assert.deepEqual(W.events().slice(-1), ['sweep:[11, 12]']);
+  await docked();
+  W.clearEvents();
+  const den = dev.state.serviceArea.supportedAreas.find((a) => a.areaInfo.locationInfo.locationName === 'Den').areaId;
+  await dev.commandHandler.executeHandler('selectAreas', { request: { newAreas: [den] } });
+  await p.doSweeping();
+  assert.deepEqual(W.events(), ['set_map:2', 'sweep:[]'], 'only room upstairs: whole floor');
+  await docked();
+});
+
+test('maps without rooms or names, and no current map (as wyze-sdk can report): no crash, whole floor cleans', async () => {
+  W.set({ maps: [{ name: null, rooms: null }, { name: 'Up', rooms: ['Bed', null] }] });
+  const n = lines.length;
+  await p.refreshRooms();
+  assert.deepEqual(lines.slice(n).filter((l) => l.startsWith('error:') || l.includes('Could not read')), []);
+  assert.deepEqual(dev.state.serviceArea.supportedAreas.map((a) => a.areaInfo.locationInfo.locationName), ['Bed']);
+  await docked();
+  W.set({ no_current_map: true });
+  W.clearEvents();
+  await dev.commandHandler.executeHandler('selectAreas', { request: { newAreas: [] } });
+  await p.doSweeping();
+  assert.deepEqual(W.events().slice(-1), ['sweep:[]'], 'whole floor even without a current map');
+  W.set({ no_current_map: false });
+  await docked();
+});
+
+test('Wyze not answering status checks: Home shows an error after 3 in a row, the real state once it answers', async () => {
+  await docked();
+  W.set({ info_error: true });
+  await poll();
+  await poll();
+  assert.notEqual(op(), S.Error, 'not after one or two');
+  await poll();
+  assert.equal(op(), S.Error);
+  assert.equal(dev.state.rvcOperationalState.operationalError.errorStateDetails, 'Wyze cloud not reachable');
+  W.set({ info_error: false });
+  await poll();
+  assert.deepEqual([op(), runMode()], [S.Charging, RUN.dock]);
+  assert.ok(lines.some((l) => l.includes('Wyze answers again')));
 });
 
 test('status loop: refreshes rooms only when docked and due, and stops on shutdown', async () => {

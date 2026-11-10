@@ -6,11 +6,13 @@ import './v4only.cjs';
 import '@matter/nodejs';
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'fs';
 import path from 'path';
 import { Environment } from '@matter/general';
 import { ServerNode } from '@matter/node';
 import { DeviceTypeId, VendorId } from '@matter/types/datatype';
 import { AnsiLogger, LogLevel } from 'matterbridge/logger';
+import { MatterbridgeDynamicPlatform } from 'matterbridge';
 import initializePlugin from '../dist/index.js';
 import { fakeWyze, PYTHON, sleep } from './setup.mjs';
 
@@ -53,6 +55,7 @@ async function start() {
     username: 'me', password: 'pw', key_id: 'k', api_key: 'a', totpKey: '', pythonPath: PYTHON, tokenFile: W.tokenFile };
   const p = initializePlugin(mb, log, cfg);
   p.constructor.ROOM_LIST_RETRY_MS = 50;
+  p.constructor.VACUUM_RETRY_MS = 50;
   let dev, addError;
   p.registerDevice = async (d) => {
     try {
@@ -74,10 +77,21 @@ async function stop({ p, server }) {
   await server.close().catch(() => {});
 }
 
+// Power loss or a crash: Matter's storage as it was, the plugin never told to shut down.
+async function crash({ p, server }) {
+  p.stopping = true;
+  p.worker.stop();
+  // Matterbridge's own platform cleanup (timers), not the plugin's shutdown, which would
+  // change the stored run mode.
+  await MatterbridgeDynamicPlatform.prototype.onShutdown.call(p, 'test crash').catch(() => {});
+  await server.close().catch(() => {});
+}
+
 async function waitForEvent(prefix) {
   for (let i = 0; i < 100 && !W.events().some((e) => e.startsWith(prefix)); i++) {
     await sleep(100);
   }
+  await sleep(500);   // the start finishes writing Home's state
 }
 
 after(() => W.cleanup());
@@ -92,7 +106,7 @@ test('restart while "Clean Bed" is current and Wyze\'s room list is unreadable: 
   await waitForEvent('sweep');
   assert.equal(run.dev.state.rvcRunMode.currentMode, BED);
   W.set({ mode: 'SWEEPING', charging: false });
-  await stop(run);
+  await crash(run);
 
   // Second start: Wyze answers, but not with the room list.
   W.set({ maps_error: true });
@@ -135,7 +149,7 @@ test('restart while a room mode is current and that room was deleted in the Wyze
   await run.dev.invokeBehaviorCommand('rvcRunMode', 'changeToMode', { newMode: 12 });   // Clean Living Room
   await waitForEvent('sweep');
   assert.equal(run.dev.state.rvcRunMode.currentMode, 12);
-  await stop(run);
+  await crash(run);
 
   W.set({ maps: [{ name: 'Main Floor', rooms: ['Kitchen', 'Den: East'] }] });   // Living Room deleted
   run = await start();
@@ -143,6 +157,47 @@ test('restart while a room mode is current and that room was deleted in the Wyze
   assert.equal(run.dev.state.rvcRunMode.currentMode, 12);
   assert.ok(run.dev.state.rvcRunMode.supportedModes.some((m) => m.mode === 12 && m.label === 'Clean Living Room'),
     'the saved current mode is kept in the list');
+  await stop(run);
+});
+
+test('a normal shutdown during a room run stores "Clean", which older versions also list', async () => {
+  W.set({ maps: [{ name: 'Main Floor', rooms: ['Kitchen', 'Den: East'] }], mode: 'IDLE', charging: true });
+  let run = await start();
+  await run.p.getStatus();   // the first status check shows the real state (docked)
+  assert.equal(run.dev.state.rvcRunMode.currentMode, 1);
+  W.clearEvents();
+  await run.dev.invokeBehaviorCommand('rvcRunMode', 'changeToMode', { newMode: 11 });   // Clean Kitchen
+  await waitForEvent('sweep');
+  assert.equal(run.dev.state.rvcRunMode.currentMode, 11);
+  await stop(run);
+  run = await start();
+  assert.equal(run.dev.state.rvcRunMode.currentMode, 2);
+  await stop(run);
+});
+
+test('Wyze unreachable at boot: starts with the vacuum found last time, loads the rooms once Wyze answers', async () => {
+  W.set({ maps: [{ name: 'Main Floor', rooms: ['Kitchen', 'Den: East'] }], mode: 'IDLE', charging: true });
+  await stop(await start());   // an earlier start that found the vacuum
+  W.set({ devices_error: true, maps_error: true });
+  fs.rmSync(W.tokenFile + '.devices.json', { force: true });   // no saved lookup in the helper either
+  lines.length = 0;
+  const run = await start();
+  assert.ok(run.dev, `device started: ${run.addError?.message ?? ''}`);
+  assert.ok(lines.some((l) => l.includes('using the vacuum found last time')));
+  assert.equal(run.p.roomsLoaded, false);
+  // Wyze is back: the status loop reads the room list without waiting 6 hours.
+  W.set({ devices_error: false, maps_error: false });
+  run.p.lastRoomRefresh = 0;
+  delete run.p.startStatusLoop;
+  const loop = run.p.startStatusLoop();
+  for (let i = 0; i < 100 && !run.p.roomsLoaded; i++) {
+    await sleep(100);
+  }
+  run.p.stopping = true;
+  run.p.pokeStatusLoop = true;
+  await loop;
+  assert.equal(run.p.roomsLoaded, true);
+  assert.deepEqual(run.dev.state.serviceArea.supportedAreas.map((a) => a.areaInfo.locationInfo.locationName), ['Kitchen', 'Den: East']);
   await stop(run);
 });
 

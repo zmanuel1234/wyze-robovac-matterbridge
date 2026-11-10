@@ -22,6 +22,7 @@ import builtins
 import fcntl
 import hashlib
 import json
+import logging
 import os
 import sys
 import time
@@ -89,23 +90,37 @@ def cli(main):
 # ----------------------------------------------------------------- token file
 
 def _ensure_dir():
+    # Owner-only, but only for a folder the plugin owns: one it creates here, or its own
+    # "wyze-robovac" folder. A tokenFile set to "~/tokens.json" must not lock down ~.
     d = os.path.dirname(_token_file)
+    created = not os.path.isdir(d)
     os.makedirs(d, mode=0o700, exist_ok=True)
-    try:
-        os.chmod(d, 0o700)
-    except OSError:
-        pass
+    if created or os.path.basename(os.path.normpath(d)) == "wyze-robovac":
+        try:
+            os.chmod(d, 0o700)
+        except OSError:
+            pass
+
+
+# The newest tokens this process has, also when they could not be written to the file
+# (disk full, read-only): the long-lived worker keeps using them instead of logging in
+# with the password on every request.
+_mem_tokens = None
+_save_warned = False
 
 
 def _load_tokens():
+    data = None
     try:
         with open(_token_file, "r", encoding="utf-8") as f:
             data = json.load(f)
-        if data.get("access_token") and data.get("refresh_token"):
-            return data
-    except (OSError, ValueError):
-        pass
-    return None
+        if not (data.get("access_token") and data.get("refresh_token")):
+            data = None
+    except (OSError, ValueError, AttributeError):
+        data = None
+    if _mem_tokens and (data is None or int(data.get("saved_at", 0)) < _mem_tokens["saved_at"]):
+        return _mem_tokens
+    return data
 
 
 def _write_private_json(path, data):
@@ -119,23 +134,39 @@ def _write_private_json(path, data):
 
 
 def _save_tokens(client):
-    _write_private_json(_token_file, {
-        "access_token": client._token,
-        "refresh_token": client._refresh_token,
-        "saved_at": int(time.time()),
-    })
+    global _mem_tokens, _save_warned
+    _mem_tokens = {"access_token": client._token, "refresh_token": client._refresh_token, "saved_at": int(time.time())}
+    try:
+        _write_private_json(_token_file, _mem_tokens)
+        _save_warned = False
+    except OSError as e:
+        if not _save_warned:   # once, not at every refresh
+            _save_warned = True
+            # A warning in the log, not an error: the request itself went through.
+            logging.getLogger("wyze-robovac").warning(
+                "Could not save the Wyze login to %s (%s); it is kept in memory, so a restart of the plugin "
+                "will need a new login", _token_file, e.strerror or e)
 
 
 class _Lock:
+    # Serialises token refreshes between helpers. Without a usable lock file (disk full,
+    # read-only), go on unlocked: only this worker refreshes in normal use.
     def __enter__(self):
-        _ensure_dir()
-        self._fd = os.open(_token_file + ".lock", os.O_RDWR | os.O_CREAT, 0o600)
-        fcntl.flock(self._fd, fcntl.LOCK_EX)
+        self._fd = None
+        try:
+            _ensure_dir()
+            self._fd = os.open(_token_file + ".lock", os.O_RDWR | os.O_CREAT, 0o600)
+            fcntl.flock(self._fd, fcntl.LOCK_EX)
+        except OSError:
+            if self._fd is not None:
+                os.close(self._fd)
+            self._fd = None
         return self
 
     def __exit__(self, *exc):
-        fcntl.flock(self._fd, fcntl.LOCK_UN)
-        os.close(self._fd)
+        if self._fd is not None:
+            fcntl.flock(self._fd, fcntl.LOCK_UN)
+            os.close(self._fd)
 
 
 # ---------------------------------------------------------------------- login
@@ -171,7 +202,10 @@ def _login_blocked():
 
 
 def _record_login_failure(reason):
-    _write_private_json(_fail_file, {"at": int(time.time()), "creds": _creds_fingerprint(), "reason": reason})
+    try:
+        _write_private_json(_fail_file, {"at": int(time.time()), "creds": _creds_fingerprint(), "reason": reason})
+    except OSError:
+        pass   # the login error itself is what gets reported
 
 
 def _full_login():
@@ -229,10 +263,13 @@ def _reauth(stale_token):
             client = Client(token=cached["access_token"], refresh_token=cached["refresh_token"])
             try:
                 client.refresh_token()
+            except WyzeApiError:
+                pass  # Wyze refused the refresh token (expired or revoked): full login below
+            else:
                 _save_tokens(client)
                 return client
-            except Exception:
-                pass  # refresh token also expired or revoked; fall through to a full login
+            # Anything else (network down, timeout) is raised: retried at the next request,
+            # rather than turned into a password login.
         return _full_login()
 
 
@@ -298,6 +335,18 @@ def _cached_mac_is_stale(client):
     return True
 
 
+def clean_name(name):
+    """A floor or room name as the plugin compares it: trimmed, never None (wyze-sdk gives
+    None for unnamed rooms and maps), and without tabs or line breaks, which separate the
+    fields and lines of a helper's output."""
+    return " ".join(str(name or "").replace("\t", " ").split())
+
+
+def rooms_of(map_or_summary):
+    """A map's rooms; wyze-sdk gives None for a map without room segmentation."""
+    return list(getattr(map_or_summary, "rooms", None) or [])
+
+
 def find_vacuum_mac(client, nickname):
     """
     The vacuum's ID (MAC) for its nickname. Remembered after the first lookup, so
@@ -315,7 +364,10 @@ def find_vacuum_mac(client, nickname):
     for device in client.devices_list():
         if device.product.model == VACUUM_MODEL and device.nickname == nickname:
             try:
-                _write_private_json(_devices_file, {nickname: device.mac})
+                try:
+                    _write_private_json(_devices_file, {nickname: device.mac})
+                except OSError:
+                    pass   # only a saved lookup; the vacuum is looked up again next time
             except OSError:
                 pass
             return device.mac

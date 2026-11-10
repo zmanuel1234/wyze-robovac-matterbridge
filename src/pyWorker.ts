@@ -7,9 +7,10 @@
  *   floor and room names are passed as-is.
  * - Wyze credentials are sent in the first line on the worker's input, not in
  *   its environment or command line, so other processes cannot read them.
- * - The worker answers requests one at a time, in order. A request that gets no
- *   answer within the timeout fails and the worker is restarted; a worker that
- *   exits is started again on the next request.
+ * - Requests are sent one at a time, in order. A request that gets no answer
+ *   within the timeout (counted from when it is sent, not while it waits) fails
+ *   and the worker is restarted; the requests behind it go to the new worker. A
+ *   worker that exits is started again for the next request.
  *
  * @license Apache-2.0
  */
@@ -27,11 +28,15 @@ export interface PyWorkerOptions {
   log : (message : string) => void;         // diagnostics (worker start/stop, stray output)
 }
 
-interface Pending { resolve : (r : PyResult) => void, timer : NodeJS.Timeout }
+interface Queued { id : number, cmd : string, args : string[], resolve : (r : PyResult) => void }
+interface InFlight { req : Queued, child : ChildProcessWithoutNullStreams, timer : NodeJS.Timeout }
 
 export class PyWorker {
   private child : ChildProcessWithoutNullStreams | undefined;
-  private readonly pending = new Map<number, Pending>();
+  // Requests wait here and go to the worker one at a time, so each one's timeout only
+  // counts the time the worker spends on it, not time spent behind slower requests.
+  private readonly queue : Queued[] = [];
+  private inFlight : InFlight | undefined;
   private nextId = 1;
   private stderrTail : string[] = [];
   private stopped = false;
@@ -44,29 +49,37 @@ export class PyWorker {
     if (this.stopped) {
       return Promise.resolve({ ok: false, stdout: '', stderr: 'The plugin is shutting down' });
     }
-    const child = this.start();
-    if (!child) {
-      return Promise.resolve({ ok: false, stdout: '', stderr: 'Could not start the Wyze helper' });
-    }
-    const id = this.nextId++;
     return new Promise((resolve) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        resolve({ ok: false, stdout: '', stderr: `No answer from the Wyze helper within ${this.opts.timeoutMs / 1000} s; restarting it` });
-        this.restart(child);
-      }, this.opts.timeoutMs);
-      this.pending.set(id, { resolve, timer });
-      child.stdin.write(JSON.stringify({ id, cmd, args }) + '\n');
+      this.queue.push({ id: this.nextId++, cmd, args, resolve });
+      this.pump();
     });
   }
 
   // Close the worker's input (it exits on its own), and make sure it is gone soon after.
   stop() {
     this.stopped = true;
+    for (const q of this.queue.splice(0)) {
+      q.resolve({ ok: false, stdout: '', stderr: 'The plugin is shutting down' });
+    }
     const child = this.child;
     if (child) {
       child.stdin.end();
       setTimeout(() => child.kill(), 3000).unref();
+    }
+  }
+
+  // Send the next waiting request, if the worker is free.
+  private pump() {
+    while (!this.inFlight && this.queue.length > 0 && !this.stopped) {
+      const req = this.queue.shift() as Queued;
+      const child = this.start();
+      if (!child) {
+        req.resolve({ ok: false, stdout: '', stderr: 'Could not start the Wyze helper' });
+        continue;
+      }
+      const timer = setTimeout(() => this.timedOut(child), this.opts.timeoutMs);
+      this.inFlight = { req, child, timer };
+      child.stdin.write(JSON.stringify({ id: req.id, cmd: req.cmd, args: req.args }) + '\n');
     }
   }
 
@@ -89,7 +102,7 @@ export class PyWorker {
     child.stdin.on('error', () => { /* worker gone; the exit handler reports it */ });
     child.stdin.write(JSON.stringify({ env: this.opts.secrets() }) + '\n');
 
-    createInterface({ input: child.stdout }).on('line', (line) => this.answer(line));
+    createInterface({ input: child.stdout }).on('line', (line) => this.answer(child, line));
     createInterface({ input: child.stderr }).on('line', (line) => {
       this.stderrTail = [...this.stderrTail.slice(-9), line];
       this.opts.log(`Wyze helper: ${line}`);
@@ -100,7 +113,7 @@ export class PyWorker {
     return child;
   }
 
-  private answer(line : string) {
+  private answer(child : ChildProcessWithoutNullStreams, line : string) {
     let msg : { id? : number, ok? : boolean, out? : string, err? : string };
     try {
       msg = JSON.parse(line);
@@ -108,36 +121,55 @@ export class PyWorker {
       this.opts.log(`Wyze helper sent an unreadable line: ${line.slice(0, 200)}`);
       return;
     }
-    const p = msg.id === undefined ? undefined : this.pending.get(msg.id);
-    if (!p) {
+    const f = this.inFlight;
+    if (!f || f.child !== child || msg.id !== f.req.id) {
       return;   // answer to a request that already timed out
     }
-    this.pending.delete(msg.id as number);
-    clearTimeout(p.timer);
-    p.resolve({ ok: msg.ok === true, stdout: String(msg.out ?? ''), stderr: String(msg.err ?? '') });
+    this.finish({ ok: msg.ok === true, stdout: String(msg.out ?? ''), stderr: String(msg.err ?? '') });
   }
 
-  // The worker exited or could not be started: fail what was waiting for it.
+  // Answer the request in flight and send the next one.
+  private finish(result : PyResult) {
+    const f = this.inFlight;
+    if (!f) {
+      return;
+    }
+    clearTimeout(f.timer);
+    this.inFlight = undefined;
+    f.req.resolve(result);
+    this.pump();
+  }
+
+  // The worker exited or could not be started: fail the request it was working on;
+  // waiting requests go to a new worker.
   private ended(child : ChildProcessWithoutNullStreams, how : string) {
     if (this.child !== child) {
       return;   // already handled (error and exit can both fire)
     }
     this.child = undefined;
     const detail = this.stderrTail.length ? `: ${this.stderrTail.join(' | ')}` : '';
-    if (!this.stopped || this.pending.size > 0) {
+    const busy = this.inFlight?.child === child;
+    if (!this.stopped || busy) {
       this.opts.log(`Wyze helper ${how}${detail}`);
     }
-    for (const [id, p] of this.pending) {
-      clearTimeout(p.timer);
-      p.resolve({ ok: false, stdout: '', stderr: `The Wyze helper ${how}${detail}` });
-      this.pending.delete(id);
+    if (busy) {
+      this.finish({ ok: false, stdout: '', stderr: `The Wyze helper ${how}${detail}` });
+    } else {
+      this.pump();
     }
   }
 
-  // A request timed out: stop using this worker at once (the next request starts a new
-  // one), fail whatever else was queued on it, and kill it.
-  private restart(child : ChildProcessWithoutNullStreams) {
-    this.ended(child, 'did not answer in time and was restarted');
+  // The request in flight got no answer in time: fail it, kill this worker (the next
+  // request starts a new one) and go on with the requests waiting behind it.
+  private timedOut(child : ChildProcessWithoutNullStreams) {
+    if (this.inFlight?.child !== child) {
+      return;
+    }
+    if (this.child === child) {
+      this.child = undefined;
+    }
+    this.opts.log('Wyze helper did not answer in time and was restarted');
     child.kill();
+    this.finish({ ok: false, stdout: '', stderr: `No answer from the Wyze helper within ${this.opts.timeoutMs / 1000} s; restarting it` });
   }
 }

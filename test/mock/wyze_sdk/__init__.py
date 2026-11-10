@@ -9,8 +9,12 @@ tokens, count logins and see which commands were sent ("events"). Keys:
   mode, battery,      what vacuums.info() reports (mode is a VacuumMode name)
   charging, fault,
   suction
-  maps                optional [{"name": floor, "rooms": [...]}, ...]
+  maps                optional [{"name": floor, "rooms": [...]}, ...]; like the real
+                      wyze-sdk, "rooms": null and a null floor or room name give None
+  no_current_map      true: info() has current_map None
   maps_error          true: get_maps() fails, as when Wyze can't be reached
+  devices_error       true: devices_list() fails
+  info_error          true: vacuums.info() fails (status checks)
   current_map         index of the current map (set_current_map changes it)
   map_lag             info() calls that still report the old map after set_current_map
   hold                seconds devices_list() sleeps (to test timeouts)
@@ -63,6 +67,12 @@ def _room_id(map_index, room_index):
     return 11 + 10 * map_index + room_index
 
 
+def _rooms(map_index, m):   # None, as wyze-sdk gives for a map without room segmentation
+    if m.get("rooms") is None:
+        return None
+    return [NS(id=_room_id(map_index, j), name=r) for j, r in enumerate(m["rooms"])]
+
+
 class _Vacuums:
     def __init__(self, client):
         self.c = client
@@ -70,6 +80,8 @@ class _Vacuums:
     def info(self, device_mac):
         self.c._check()
         d = _st()
+        if d.get("info_error"):
+            raise WyzeApiError("status unavailable (test)", {"code": 3})
         if device_mac != VACUUM_MAC:
             raise WyzeApiError("The request to the Wyze API failed.", {"code": 1001, "msg": "bad device"})
         current = d.get("current_map", 0)
@@ -77,7 +89,7 @@ class _Vacuums:
             current = d.get("previous_map", current)
             d["map_lag"] -= 1
             _save(d)
-        rooms = [NS(id=_room_id(current, i), name=r) for i, r in enumerate(_maps(d)[current]["rooms"])]
+        rooms = _rooms(current, _maps(d)[current])
         if d.get("sdk_warning"):   # like wyze-sdk's DeviceProp when Wyze sends a value it can't convert
             logging.getLogger("wyze_sdk.models.devices.base").warning("could not cast value `x` into expected type <class 'int'>")
         return NS(
@@ -87,7 +99,7 @@ class _Vacuums:
             fault_code=NS(name=d["fault"]) if d.get("fault") else None,
             clean_level=NS(name=d["suction"].upper()) if d.get("suction") else None,
             product=NS(model="JA_RO2"),
-            current_map=NS(rooms=rooms),
+            current_map=None if d.get("no_current_map") else NS(rooms=rooms),
             # Like wyze-sdk's DeviceProp: absent when the test doesn't set "online"
             _is_online=None if "online" not in d else NS(
                 value=d["online"], ts=_dt.datetime.fromtimestamp(d.get("online_since", 1700000000))),
@@ -99,7 +111,7 @@ class _Vacuums:
         if d.get("maps_error"):
             raise WyzeApiError("maps unavailable (test)", {"code": 3})
         return [NS(id=i + 1, name=m["name"], is_current=(i == d.get("current_map", 0)),
-                   rooms=[NS(id=_room_id(i, j), name=r) for j, r in enumerate(m["rooms"])])
+                   rooms=_rooms(i, m))
                 for i, m in enumerate(_maps(d))]
 
     def set_current_map(self, device_mac, map_id):
@@ -175,6 +187,8 @@ class Client:
 
     def devices_list(self):
         self._check()
+        if _st().get("devices_error"):
+            raise WyzeApiError("devices unavailable (test)", {"code": 3})
         _log("list")
         d = _st()
         if d.get("hold"):
