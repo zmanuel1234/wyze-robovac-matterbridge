@@ -10,6 +10,7 @@ tokens, count logins and see which commands were sent ("events"). Keys:
   charging, fault,
   suction
   maps                optional [{"name": floor, "rooms": [...]}, ...]
+  maps_error          true: get_maps() fails, as when Wyze can't be reached
   current_map         index of the current map (set_current_map changes it)
   map_lag             info() calls that still report the old map after set_current_map
   hold                seconds devices_list() sleeps (to test timeouts)
@@ -39,8 +40,13 @@ def _st():
 
 
 def _save(d):
-    with open(os.environ["MOCK_STATE"], "w") as f:
+    # Written to a temporary file and renamed, so a test reading the state while a helper
+    # runs in the background never sees a half-written file.
+    path = os.environ["MOCK_STATE"]
+    tmp = f"{path}.{os.getpid()}.tmp"
+    with open(tmp, "w") as f:
         json.dump(d, f)
+    os.replace(tmp, path)
 
 
 def _log(event):
@@ -90,6 +96,8 @@ class _Vacuums:
     def get_maps(self, device_mac):
         self.c._check()
         d = _st()
+        if d.get("maps_error"):
+            raise WyzeApiError("maps unavailable (test)", {"code": 3})
         return [NS(id=i + 1, name=m["name"], is_current=(i == d.get("current_map", 0)),
                    rooms=[NS(id=_room_id(i, j), name=r) for j, r in enumerate(m["rooms"])])
                 for i, m in enumerate(_maps(d))]

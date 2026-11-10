@@ -86,15 +86,24 @@ Test version, published under npm's `dev` tag.
 
 ### ** Added **
 
-- Run modes for controllers without a room list, such as Alexa, which offers them in routines: **Dock**, **Clean**, **Clean All** per floor and **Clean _room_** per room from the Wyze app ("Clean Kitchen"). A room name used on more than one floor, and "Clean All" with several floors, get the floor in brackets. Each floor and room keeps its number across restarts (`run-modes.json` next to the token cache), so a routine keeps pointing at the same room when rooms are added or reordered.
+- Run modes for controllers without a room list, such as Alexa, which offers them in routines: **Dock**, **Clean**, **Clean All** per floor and **Clean _room_** per room from the Wyze app ("Clean Kitchen"). A room name used on more than one floor, and "Clean All" with several floors, get the floor in brackets. Each floor and room keeps its number and name across restarts (`run-modes.json` next to the token cache), so a routine keeps pointing at the same room when rooms are added or reordered; modes of rooms deleted in the Wyze app are dropped at the next restart.
+- Choosing the run mode that is already shown while the vacuum is paused resumes the run, as "Clean" does.
 - While a run lasts, the vacuum shows the run mode that started it ("Clean Kitchen"); runs started in the Wyze app show as "Clean".
 
 ### ** Changed **
 
 - The run modes formerly named "Idle" and "Cleaning" are named "Dock" and "Clean" (same numbers and meaning).
-- The Wyze app's whole-floor entry no longer appears as a room named "\*Entire Floor\*" in Home. Selecting no rooms, or every room on a floor, cleans the whole floor.
+- The Wyze app's whole-floor entry no longer appears as a room named "\*Entire Floor\*" in Home. Selecting no rooms, or every room on a floor, cleans the whole floor. The rooms keep the area IDs they had before, so Home scenes that clean particular rooms are not affected.
+- At startup the room list is read up to three times, 15 s apart, as for the vacuum itself.
 - A different cleaning run mode chosen while the vacuum is busy is logged and not started (Matterbridge refuses that change too); previously only "Cleaning" existed.
 - The run-mode handler is registered for run-mode changes only, so a suction change can never be taken for a run-mode change.
+
+### ** Fixed ** (found in review before release)
+
+- Matter keeps the current run mode across restarts but not the list of modes, and does not start the device if the saved mode is missing from the list. A restart during a room run with the room list unreadable, or with that room deleted in the Wyze app, would have left the vacuum missing from Home and Alexa. The mode that may be shown is now saved and always kept in the list, and when the room list can't be read the saved modes are listed as before; such modes only log a warning when chosen.
+- A run mode whose room is gone no longer leaves Home and Alexa showing the vacuum as running.
+- A `run-modes.json` that can't be read is logged as a warning instead of being renumbered silently.
+- Mode names are cut to Matter's 64-byte limit at a character boundary (names with accents or emoji).
 
 ## [1.1.3] - 2026-11-03
 
