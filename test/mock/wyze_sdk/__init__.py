@@ -15,6 +15,7 @@ tokens, count logins and see which commands were sent ("events"). Keys:
   maps_error          true: get_maps() fails, as when Wyze can't be reached
   devices_error       true: devices_list() fails
   info_error          true: vacuums.info() fails (status checks)
+  refresh_fault       "http401", "http503" or "network": how refresh_token() fails
   current_map         index of the current map (set_current_map changes it)
   map_lag             info() calls that still report the old map after set_current_map
   hold                seconds devices_list() sleeps (to test timeouts)
@@ -173,6 +174,13 @@ class Client:
 
     def refresh_token(self):
         d = _st()
+        fault = d.get("refresh_fault")   # "http401" / "http503": Wyze answers with that status; "network": no answer
+        if fault == "network":
+            raise ConnectionError("Connection refused (test)")
+        if fault and fault.startswith("http"):
+            err = type("HTTPError", (OSError,), {})(f"{fault[4:]} Error (test)")
+            err.response = NS(status_code=int(fault[4:]))
+            raise err
         if self._refresh_token != d.get("valid_refresh"):
             raise WyzeApiError("refresh failed", {"code": 2002, "msg": "RefreshTokenError"})
         d["refreshes"] = n = d.get("refreshes", 0) + 1

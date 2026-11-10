@@ -201,6 +201,18 @@ test('Wyze unreachable at boot: starts with the vacuum found last time, loads th
   await stop(run);
 });
 
+test('shutdown when the device never started (vacuum not found) does not throw', async () => {
+  W.set({ devices_error: true, maps_error: true });
+  fs.rmSync(path.join(path.dirname(W.tokenFile), 'vacuum.json'), { force: true });
+  fs.rmSync(W.tokenFile + '.devices.json', { force: true });
+  const run = await start();
+  assert.equal(run.dev, undefined);
+  await run.p.onShutdown('test');   // must not throw
+  await run.server.close().catch(() => {});
+  W.set({ devices_error: false, maps_error: false });
+  lines.splice(0, lines.length, ...lines.filter((l) => !l.includes('No Wyze robot vacuum found')));
+});
+
 test('no errors logged', () => {
   assert.deepEqual(lines.filter((l) => l.startsWith('error:')), []);
 });

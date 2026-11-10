@@ -417,15 +417,18 @@ export class RoboVacMatterbridgeDynamicPlatform extends MatterbridgeDynamicPlatf
     this.pokeStatusLoop = true;
     // Matter stores the current run mode for the next start. A room mode ("Clean Bed")
     // is stored as plain "Clean" (also true), which every version of this plugin lists,
-    // so going back to an older version after an update can't hit an unknown mode. The
-    // next status check shows the room mode again.
-    if( this.roboticVacuum && this.currentRunMode() >= RoboVacMatterbridgeDynamicPlatform.FIRST_TARGET_MODE ) {
-      try {
-        await this.roboticVacuum.setAttribute('RvcRunMode', 'currentMode', RoboVacMatterbridgeDynamicPlatform.RUN_CLEAN, this.log);
-        this.rememberShownMode(RoboVacMatterbridgeDynamicPlatform.RUN_CLEAN);
-      } catch {
-        // shutting down anyway; the saved mode is still listed at the next start
+    // so going back to an older version after an update can't hit an unknown mode.
+    // Only once Matter took it is the room mode dropped from what the next start keeps.
+    try {
+      if( this.roboticVacuum && this.currentRunMode() >= RoboVacMatterbridgeDynamicPlatform.FIRST_TARGET_MODE ) {
+        const stored = await this.roboticVacuum.setAttribute('RvcRunMode', 'currentMode',
+          RoboVacMatterbridgeDynamicPlatform.RUN_CLEAN, this.log);
+        if( stored !== false ) {
+          this.rememberShownMode(RoboVacMatterbridgeDynamicPlatform.RUN_CLEAN);
+        }
       }
+    } catch {
+      // the device never started (or is gone): nothing to store; shut down the rest
     }
     this.worker.stop();
     await super.onShutdown(reason);

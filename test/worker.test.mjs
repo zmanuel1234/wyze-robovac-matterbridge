@@ -180,6 +180,25 @@ test('a tokenFile in an existing folder leaves that folder\'s permissions alone;
   assert.equal(fs.statSync(own).mode & 0o777, 0o700);
 });
 
+test('a refresh Wyze refuses (error code or HTTP 401) leads to a password login; a network error or 503 does not', async () => {
+  const w = worker();
+  assert.equal((await w.request('getVacuumStatus', [NICK])).ok, true);
+  const expire = (fault) => W.set({ valid_access: 'expired-by-test', refresh_fault: fault });
+  for (const fault of ['network', 'http503']) {
+    expire(fault);
+    const logins = W.read().logins;
+    const r = await w.request('getVacuumStatus', [NICK]);
+    assert.equal(r.ok, false, fault);
+    assert.equal(W.read().logins, logins, `no password login after ${fault}`);
+  }
+  expire('http401');
+  const logins = W.read().logins;
+  const r = await w.request('getVacuumStatus', [NICK]);
+  assert.equal(r.ok, true, r.stderr);
+  assert.equal(W.read().logins, logins + 1, 'refused refresh: one password login');
+  W.set({ refresh_fault: null });
+});
+
 test('wrong password: clear error, then no retry for 15 min', async () => {
   fs.rmSync(W.tokenFile, { force: true });
   const w = worker('wrong');

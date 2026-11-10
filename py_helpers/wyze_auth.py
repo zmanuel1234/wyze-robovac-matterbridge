@@ -252,6 +252,17 @@ def _is_token_error(err):
     return str(code) == "2001" or msg == "AccessTokenError" or "access token has expired" in str(err)
 
 
+def _refresh_refused(err):
+    """True when Wyze answered and refused the refresh token, so only a full login helps.
+    wyze-sdk raises WyzeApiError for an error code in a normal answer, requests' HTTPError
+    for an HTTP error status (it checks the status first), and KeyError for an answer
+    without the new tokens. Connection errors, timeouts and 5xx answers are not a refusal."""
+    if isinstance(err, (WyzeApiError, KeyError)):
+        return True
+    status = getattr(getattr(err, "response", None), "status_code", None)
+    return type(err).__name__ == "HTTPError" and status in (400, 401, 403)
+
+
 def _reauth(stale_token):
     """Refresh (or, failing that, fully log in) under the lock. Returns a new Client."""
     with _Lock():
@@ -263,13 +274,13 @@ def _reauth(stale_token):
             client = Client(token=cached["access_token"], refresh_token=cached["refresh_token"])
             try:
                 client.refresh_token()
-            except WyzeApiError:
-                pass  # Wyze refused the refresh token (expired or revoked): full login below
+            except Exception as e:
+                if not _refresh_refused(e):
+                    raise   # network down, timeout, server error: retried at the next request
+                # Wyze refused the refresh token (expired or revoked): full login below
             else:
                 _save_tokens(client)
                 return client
-            # Anything else (network down, timeout) is raised: retried at the next request,
-            # rather than turned into a password login.
         return _full_login()
 
 
