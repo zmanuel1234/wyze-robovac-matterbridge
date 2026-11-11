@@ -1,6 +1,6 @@
 {
   "name": "matterbridge-wyze-robovac-plus",
-  "version": "1.2.0-dev-1",
+  "version": "1.2.0",
   "description": "Wyze RoboVac Plus",
   "author": "Manuel Zamfir (based on matterbridge-wyze-robovac by Rob Coben)",
   "license": "Apache-2.0",

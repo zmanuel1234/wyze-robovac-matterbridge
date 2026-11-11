@@ -80,9 +80,11 @@ Housekeeping only; the plugin behaves exactly as 1.0.1-secure.3.
 - The package ships only what the plugin needs (`files` in package.json): compiled code, Python helpers, settings schema, sample config, README, CHANGELOG, LICENSE. No source maps, type declarations or author tooling.
 - Removed the original author's publish script, CODEOWNERS, devcontainer, legacy .eslintrc, unused tsconfig.production.json and donation image.
 
-## [1.2.0-dev-1] - 2026-11-10
+## [1.2.0] - 2026-11-11
 
-Test version, published under npm's `dev` tag. To go back to 1.1.3 later, send the vacuum to its dock first.
+Tested as 1.2.0-dev-1 (same code) with Apple Home and Alexa on a Raspberry Pi. To go back to 1.1.3 later, send the vacuum to its dock first.
+
+After updating, Alexa still shows the old run modes: remove the vacuum in the Alexa app and add it again with a new pairing code from the Matterbridge UI (vacuum's QR icon, "Turn on pairing"). Apple Home needs nothing.
 
 ### ** Added **
 
